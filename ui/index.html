@@ -21,12 +21,15 @@
         <div class="app-header-inner">
           <div class="header-left">
             <div class="brand">
+              <!-- The app mark: a folder, and two arcs radiating from it. Same
+                   geometry as the window icon (tools/make-icons.mjs), in
+                   currentColor so it follows whichever of the twelve themes is
+                   on. -->
               <div class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M5 12.55a11 11 0 0 1 14.08 0" />
-                  <path d="M1.42 9a16 16 0 0 1 21.16 0" />
-                  <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
-                  <line x1="12" y1="20" x2="12.01" y2="20" />
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M3.5 7.4H8.1L9.5 10.4H12.4A1.7 1.7 0 0 1 14.1 12.1V19.9A1.7 1.7 0 0 1 12.4 21.6H3.5A1.7 1.7 0 0 1 1.8 19.9V9.1A1.7 1.7 0 0 1 3.5 7.4Z" fill="currentColor" />
+                  <path d="M18.1 10.4A4 4 0 0 0 14.1 6.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
+                  <path d="M21.1 10.4A7 7 0 0 0 14.1 3.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
                 </svg>
               </div>
               <div class="brand-text">
@@ -717,6 +720,15 @@
                       <option value="grid">Gallery</option>
                       <option value="list">List</option>
                     </select>
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-player">Media player</label>
+                    <div class="input-with-button">
+                      <input id="set-player" type="text" placeholder="Leave blank to use whatever Windows opens the file with"
+                             data-tip="Which program the Play buttons hand a video to. Blank means the one already registered for that file type — set this to vlc.exe if you would rather always use VLC." />
+                      <button id="set-player-detect" class="ghost-button" type="button"
+                              data-tip="Look for VLC in the usual install locations and fill the box in.">Detect</button>
+                    </div>
                   </div>
                 </div>
                 <div class="settings-stats-grid">

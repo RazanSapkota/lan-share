@@ -415,6 +415,10 @@ async fn post_json_auth<T: DeserializeOwned>(
         .header(hyper::header::CONTENT_TYPE, "application/json")
         .header(hyper::header::HOST, address)
         .header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
+        // The same assertion the receiver page makes: this came from our own
+        // client, not from a form somewhere. Routes that check for it (the play
+        // link) then need no peer-shaped exception.
+        .header(crate::models::CSRF_HEADER, "1")
         .body(Full::new(Bytes::from(serde_json::to_vec(body)?)))?;
 
     let response = tokio::time::timeout(REQUEST_TIMEOUT, client.request(request))
@@ -437,6 +441,37 @@ async fn post_json_auth<T: DeserializeOwned>(
         return Err(anyhow!("{detail}"));
     }
     serde_json::from_slice(&bytes).context("the device sent a reply we could not read")
+}
+
+// ---------------------------------------------------------------------------
+// Play links
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct PlayLink {
+    pub(crate) token: String,
+    pub(crate) name: String,
+}
+
+/// Ask a paired device for a link its file can be played from.
+///
+/// No new endpoint on their side: a peer holds a real session scope, so this is
+/// the same `/api/play/link` the browser uses. A local player cannot present
+/// our pair token any more than it can present a cookie, which is exactly the
+/// problem the play token exists to solve -- here for a file on their disk.
+pub(crate) async fn play_link(
+    address: &str,
+    token: &str,
+    share_id: &str,
+    path: &str,
+) -> Result<PlayLink> {
+    post_json_auth(
+        address,
+        "/api/play/link",
+        token,
+        &serde_json::json!({ "share": share_id, "path": path }),
+    )
+    .await
 }
 
 /// Upload one file, reporting bytes as they leave.

@@ -1461,6 +1461,7 @@ fn fixture_with(opts: FixtureOpts) -> HttpFixture {
             ephemeral: Vec::new(),
         })),
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        play_tokens: Arc::new(Mutex::new(HashMap::new())),
         pin_attempts: Arc::new(Mutex::new(HashMap::new())),
         activity: Arc::new(Mutex::new(VecDeque::new())),
         next_activity_id: Arc::new(AtomicU64::new(0)),
@@ -1660,6 +1661,373 @@ fn http_serves_the_shell_and_assets_without_auth() {
     assert_eq!(json["pinRequired"], true);
     // Liveness only -- no share names, no paths, no version of the host OS.
     assert!(json.get("shares").is_none());
+}
+
+// ===========================================================================
+// Play links (external players)
+// ===========================================================================
+
+impl HttpFixture {
+    /// Mint a play link the way the receiver page does.
+    fn play_link(&self, cookie: &str, share: &str, path: &str) -> serde_json::Value {
+        let request = self
+            .build("/api/play/link", Some(cookie), None)
+            .method("POST")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("X-LanShare", "1")
+            .body(Body::from(format!(
+                r#"{{"share":"{share}","path":"{path}"}}"#
+            )))
+            .unwrap();
+        let (status, _, body) = self.send(request);
+        assert_eq!(status, StatusCode::OK, "minting a play link should succeed");
+        self.json(&body)
+    }
+}
+
+/// The whole point: VLC has no cookie, and must still get the bytes.
+#[test]
+fn a_play_link_serves_the_file_without_any_session() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+    let link = fx.play_link(&cookie, "shr1", "photo.jpg");
+    let token = link["token"].as_str().unwrap().to_string();
+    assert_eq!(link["name"], "photo.jpg");
+
+    // No cookie, no bearer token, no CSRF header -- exactly what a player sends.
+    let (status, headers, body) = fx.get(&format!("/play/{token}"), None);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"0123456789");
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+
+    // The trailing name is what makes a player guess the container correctly.
+    let (status, _, body) = fx.get(&format!("/play/{token}/photo.jpg"), None);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"0123456789");
+}
+
+/// Scrubbing a two-hour film is Range requests, so the play route has to inherit
+/// the same ServeFile handling the browser path uses.
+#[test]
+fn a_play_link_honours_range_requests() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+    let token = fx.play_link(&cookie, "shr1", "photo.jpg")["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let request = fx
+        .build(&format!("/play/{token}/photo.jpg"), None, Some("bytes=2-5"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = fx.send(request);
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, b"2345");
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes 2-5/10");
+}
+
+/// The token names the file. The tail of the URL is decoration, and a player --
+/// or anyone editing the address bar -- must not be able to steer with it.
+#[test]
+fn the_name_on_a_play_url_cannot_redirect_it() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+    let token = fx.play_link(&cookie, "shr1", "photo.jpg")["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for tail in [
+        "../../secret.txt",
+        "sub/clip.txt",
+        "..%2f..%2fsecret.txt",
+        "anything-at-all.mkv",
+    ] {
+        let (status, _, body) = fx.get(&format!("/play/{token}/{tail}"), None);
+        assert_eq!(status, StatusCode::OK, "{tail} should still resolve");
+        assert_eq!(body, b"0123456789", "{tail} served a different file");
+    }
+}
+
+#[test]
+fn an_expired_play_link_is_gone_rather_than_refused() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+    let token = fx.play_link(&cookie, "shr1", "photo.jpg")["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Back-date it past its window.
+    {
+        let mut tokens = fx.ctx.play_tokens.lock().unwrap();
+        tokens.get_mut(&token).unwrap().expires_ms = crate::utils::now_ms() - 1;
+    }
+
+    // 404, not 401: an expired link and one that never existed must look the
+    // same, or this becomes an oracle for probing the token space.
+    let (status, _, _) = fx.get(&format!("/play/{token}"), None);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // And resolving it dropped it, so it cannot linger in the map.
+    assert!(!fx.ctx.play_tokens.lock().unwrap().contains_key(&token));
+}
+
+/// Switching a share off is how you take back access. A link already handed to
+/// a player has to die with it, not keep streaming.
+#[test]
+fn disabling_a_share_kills_its_live_play_links() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+    let token = fx.play_link(&cookie, "shr1", "photo.jpg")["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(fx.get(&format!("/play/{token}"), None).0, StatusCode::OK);
+
+    fx.ctx.shares.write().unwrap().shares[0].cfg.enabled = false;
+
+    let (status, _, _) = fx.get(&format!("/play/{token}"), None);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = fx.get(&format!("/playlist/{token}"), None);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A play link is not a session: it cannot be traded for one, and it reaches
+/// nothing but its own file.
+#[test]
+fn a_play_token_unlocks_nothing_but_its_own_file() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+    let token = fx.play_link(&cookie, "shr1", "photo.jpg")["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Not accepted as a session token anywhere else.
+    for uri in [
+        "/api/shares",
+        "/api/list?share=shr1&path=",
+        "/files/shr1/photo.jpg",
+        "/download/shr1/photo.jpg",
+    ] {
+        let (status, _, _) = fx.get_as_peer(uri, &token);
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} accepted a play token");
+    }
+
+    // And a made-up token reaches nothing.
+    let (status, _, _) = fx.get("/play/NOTAREALTOKENNOTAREALTOKEN", None);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn minting_a_play_link_needs_a_session_and_a_csrf_header() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+
+    // No session at all.
+    let request = fx
+        .build("/api/play/link", None, None)
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-LanShare", "1")
+        .body(Body::from(r#"{"share":"shr1","path":"photo.jpg"}"#))
+        .unwrap();
+    assert_eq!(fx.send(request).0, StatusCode::UNAUTHORIZED);
+
+    // Session, but no CSRF header: a cross-site form post must not be able to
+    // mint a link to a file it cannot even name the contents of.
+    let request = fx
+        .build("/api/play/link", Some(&cookie), None)
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"share":"shr1","path":"photo.jpg"}"#))
+        .unwrap();
+    assert_eq!(fx.send(request).0, StatusCode::FORBIDDEN);
+
+    // A path that escapes the share is refused at mint time, not at play time.
+    let request = fx
+        .build("/api/play/link", Some(&cookie), None)
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-LanShare", "1")
+        .body(Body::from(r#"{"share":"shr1","path":"../secret.txt"}"#))
+        .unwrap();
+    assert_eq!(fx.send(request).0, StatusCode::BAD_REQUEST);
+}
+
+/// The .m3u is the universal handoff: one absolute URL, and a MIME type every
+/// player on every platform is registered for.
+#[test]
+fn the_playlist_is_one_absolute_url_a_player_can_open() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+    let token = fx.play_link(&cookie, "shr1", "photo.jpg")["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, headers, body) = fx.get(&format!("/playlist/{token}"), None);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "audio/x-mpegurl");
+    assert!(headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .contains("photo.jpg.m3u"));
+
+    let text = String::from_utf8(body).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "#EXTM3U");
+    assert_eq!(lines[1], "#EXTINF:-1,photo.jpg");
+    // Absolute, and pointing at the host the client actually reached -- a
+    // relative URL is useless to a player, and a guessed one may not route.
+    assert_eq!(
+        lines[2],
+        format!("http://192.168.1.10:8080/play/{token}/photo.jpg")
+    );
+    assert_eq!(lines.len(), 3);
+}
+
+/// The cap is a bound on the map, not a way to lock someone out of the file
+/// they just tapped.
+#[test]
+fn the_play_token_table_is_capped_and_evicts_the_oldest() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+
+    for _ in 0..(crate::models::PLAY_TOKEN_CAP + 10) {
+        fx.play_link(&cookie, "shr1", "photo.jpg");
+    }
+    assert_eq!(
+        fx.ctx.play_tokens.lock().unwrap().len(),
+        crate::models::PLAY_TOKEN_CAP
+    );
+
+    // The most recent one still works, which is the property that matters.
+    let token = fx.play_link(&cookie, "shr1", "photo.jpg")["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(fx.get(&format!("/play/{token}"), None).0, StatusCode::OK);
+}
+
+/// A share-scoped session (someone who arrived via a secret link) can mint a
+/// play link for its own share and nothing else.
+#[test]
+fn a_share_scoped_session_cannot_mint_links_for_other_shares() {
+    let fx = http_fixture("123456");
+    let cookie = fx.login("123456");
+
+    // Add a second share the share-link session must not reach.
+    {
+        let mut registry = fx.ctx.shares.write().unwrap();
+        let mut other = registry.shares[0].clone();
+        other.cfg.id = "shr2".to_string();
+        other.cfg.token = "TOKENTOKENTOKENTOKENTOKEN2".to_string();
+        registry.shares.push(other);
+    }
+
+    let scoped = {
+        let (status, headers, _) = fx.get("/s/TOKENTOKENTOKENTOKENTOKEN2", None);
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let cookie = headers[header::SET_COOKIE].to_str().unwrap().to_string();
+        cookie.split(';').next().unwrap().to_string()
+    };
+
+    let request = fx
+        .build("/api/play/link", Some(&scoped), None)
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-LanShare", "1")
+        .body(Body::from(r#"{"share":"shr1","path":"photo.jpg"}"#))
+        .unwrap();
+    let (status, _, _) = fx.send(request);
+    assert_ne!(status, StatusCode::OK, "a share session reached another share");
+
+    // Its own share is fine.
+    let link = fx.play_link(&scoped, "shr2", "photo.jpg");
+    let token = link["token"].as_str().unwrap();
+    assert_eq!(fx.get(&format!("/play/{token}"), None).0, StatusCode::OK);
+    let _ = cookie;
+}
+
+/// The play URL ends in a filename because that is how a player decides which
+/// demuxer to use. Percent-encoding the dot would leave it guessing.
+#[test]
+fn a_play_url_keeps_the_extension_readable() {
+    use crate::utils::url_encode_segment;
+
+    assert_eq!(url_encode_segment("Movie.mkv"), "Movie.mkv");
+    assert_eq!(url_encode_segment("The Film (2024).mkv"), "The%20Film%20%282024%29.mkv");
+    assert_eq!(url_encode_segment("clip_1-2~3.mp4"), "clip_1-2~3.mp4");
+    // Anything structural still goes, or the tail could break out of its segment.
+    assert_eq!(url_encode_segment("a/b?c#d.mkv"), "a%2Fb%3Fc%23d.mkv");
+    assert_eq!(url_encode_segment("日本語.mkv"), "%E6%97%A5%E6%9C%AC%E8%AA%9E.mkv");
+}
+
+/// The desktop Play button ends in "let the shell open this", so the one thing
+/// it must never be handed is a program.
+#[test]
+fn the_play_button_refuses_to_launch_programs() {
+    use crate::tasks::is_launchable;
+
+    for ext in ["exe", "EXE", "bat", "cmd", "ps1", "msi", "lnk", "scr", "jar", "sh", "url"] {
+        assert!(!is_launchable(ext), "{ext} should never be launched");
+    }
+    for ext in ["mkv", "mp4", "avi", "webm", "flac", "mp3", "mov", "m2ts"] {
+        assert!(is_launchable(ext), "{ext} is media and should play");
+    }
+}
+
+/// The mark has to arrive before anyone has authenticated -- the PIN screen is
+/// the first thing a visitor sees, and a tab icon is requested unprompted.
+#[test]
+fn the_app_mark_is_served_without_a_session() {
+    let fx = http_fixture("123456");
+
+    let (status, headers, body) = fx.get("/favicon.ico", None);
+    assert_eq!(status, StatusCode::OK, "a blank tab icon is not an answer");
+    assert_eq!(headers[header::CONTENT_TYPE], "image/x-icon");
+    // An ICO: reserved 0, type 1, and at least one directory entry.
+    assert_eq!(&body[..4], &[0, 0, 1, 0]);
+    assert!(u16::from_le_bytes([body[4], body[5]]) >= 1);
+
+    let (status, headers, body) = fx.get("/assets/icon.svg", None);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
+    assert!(String::from_utf8_lossy(&body).contains("<svg"));
+
+    for uri in ["/assets/icon-192.png", "/assets/icon-512.png"] {
+        let (status, headers, body) = fx.get(uri, None);
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n", "{uri} is not a PNG");
+    }
+}
+
+/// A manifest that lists only an SVG does not get an install prompt on Android,
+/// which makes the whole file decorative.
+#[test]
+fn the_manifest_offers_raster_icons_too() {
+    let fx = http_fixture("123456");
+    let (status, headers, body) = fx.get("/manifest.webmanifest", None);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/manifest+json");
+
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("manifest is not JSON");
+    let icons = json["icons"].as_array().expect("no icons");
+    let sizes: Vec<&str> = icons
+        .iter()
+        .filter_map(|i| i["sizes"].as_str())
+        .collect();
+    assert!(sizes.contains(&"192x192"), "no 192px icon: {sizes:?}");
+    assert!(sizes.contains(&"512x512"), "no 512px icon: {sizes:?}");
+
+    // And every icon it advertises is actually served.
+    for icon in icons {
+        let src = icon["src"].as_str().unwrap();
+        assert_eq!(fx.get(src, None).0, StatusCode::OK, "{src} is 404");
+    }
 }
 
 #[test]

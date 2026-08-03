@@ -23,6 +23,9 @@ Tauri v2, vanilla HTML/CSS/JS, **no bundler and no npm dependencies**.
   rate-limited per device.
 - **Media gallery on the receiving end** — image thumbnails, inline video and
   audio playback with real seeking, an image lightbox, and a list-view toggle.
+- **Anything a browser won't play — `.mkv`, `.avi`, HEVC, DTS — opens in VLC**
+  or whatever player the device already has, streaming from the host with no
+  download and no conversion.
 - **Per-file downloads**, plus an optional streamed `.zip` of a whole folder.
 - **Optional upload inbox.** Off by default; when on, exactly one folder accepts
   uploads and nothing is ever overwritten.
@@ -55,7 +58,7 @@ mints a short-lived link plus a QR code the phone can scan.
 ```sh
 npm run tauri:dev      # cargo run --manifest-path src-tauri/Cargo.toml
 npm run tauri:build    # release build
-npm test               # cargo test  (163 tests)
+npm test               # cargo test  (177 tests)
 ```
 
 There is no frontend build step — `ui/` is served straight from disk by Tauri,
@@ -79,7 +82,9 @@ succeeds.
 
 ```
 ui/                        desktop control panel  (frontendDist, Tauri webview)
+tools/make-icons.mjs       the app mark -> png/ico/icns   (run by hand)
 src-tauri/
+  icons/                   window, taskbar, favicon and manifest icons
   web/                     receiver web app       (include_str!'d into the exe)
   src/
     main.rs                Builder, command registry, RunEvent::Exit hook
@@ -109,9 +114,61 @@ no internet access at all — only a route to this host.
 
 ## Notes on a few decisions
 
+**The icons are generated, not drawn.** The mark — a folder with two arcs
+radiating off it — is defined once as coordinates in `tools/make-icons.mjs`,
+which draws it procedurally and writes every PNG, the `.ico` and the `.icns`
+using nothing but Node's `zlib`: PNG, ICO and ICNS are all simple enough
+containers to emit by hand, and that beats adding an image toolchain to a
+project whose whole boast is not having one. The three inline SVG copies (the
+window header, the PIN screen, the favicon) come from `--svg`, so the drawing
+and the icons cannot drift. Sizes at or below 32px drop the outer arc and
+thicken what is left; two thin arcs at 16px are a green smudge.
+
+The `.ico` carries ten sizes, not the usual handful, because a missing size is
+not a missing icon — the shell scales a neighbour instead, and that upscale is
+what "blurry icon" actually is. 16/20/24/32 for lists and the title bar, 40 at
+125% DPI, 48/64 for the taskbar and Alt-Tab, 96/128/256 for Explorer. Entries
+below 64px are uncompressed DIBs and the rest are PNG, which is what keeps the
+file at 37 KB rather than 100 — a 128px DIB alone is 67 KB.
+
+**`build.rs` watches the icons, and has to.** `tauri_build` compiles
+`icons/icon.ico` into a Windows resource, but the only path it registers with
+cargo is `tauri.conf.json`. Replace the icon and nothing re-runs: cargo relinks
+against a stale `resource.lib` and the binary keeps the icon you just replaced,
+silently. The two `rerun-if-changed` lines in `build.rs` are the fix, and the
+symptom they cure — a rebuilt exe still showing the old icon — is worth
+recognising, because nothing about it looks like a build problem.
+
 **Storage is a single JSON config file.** No database. Directory listings are
 read live from disk; the activity log lives in memory and clears on quit;
 thumbnails go in an on-disk cache keyed by `path + mtime + size`.
+
+**`.mkv` is handed to a player, not converted.** No browser decodes Matroska
+and none can be taught to — there is no codec to install, and VLC is a player
+rather than something a page can borrow from. Transcoding on the host was the
+alternative: it needs ffmpeg installed or bundled, burns a core per viewer, and
+still cannot seek properly without building HLS on top. Meanwhile the phone in
+your hand already has software that plays the file perfectly. So **Open in
+player** mints a link and hands the stream over — Android gets an intent URL
+and a real app chooser, iOS gets VLC's callback scheme. Desktop browsers have
+neither: no browser exposes an app chooser, so there is nothing to call. They
+get a panel with the stream link, a Copy button and the *Open Network Stream*
+keystroke, plus the one-line `.m3u` for anyone whose player is already
+associated with playlists. Seeking works
+because it is the same `Range` handling the browser path uses. This covers
+`.avi`, `.wmv`, `.ts`, HEVC and AC3 for free, and it is offered next to files
+that *do* play inline, because a phone often handles a big one better in a real
+player.
+
+**A play link is not a session.** A player cannot hold our cookie, so the
+credential has to ride in the URL — the exact thing the session design refuses,
+one paragraph down. What makes it acceptable is how little it carries: one
+file, six hours, accepted only on `/play/*` and `/playlist/*` and nowhere else,
+capped at 64 live, re-checked against the share on every request so switching a
+share off cuts the stream, and gone when the server stops. Pasted into a group
+chat it leaks the film someone was already watching, not the run of the house.
+The URL ends in the real filename, dot and all — a player picks its demuxer
+from the extension it can see, so `movie%2Emkv` would be a file of unknown type.
 
 **Auth rides on a cookie, not a header.** `<video src>` and `<img src>` cannot
 send `Authorization`, a Service Worker needs a secure context that plain-HTTP

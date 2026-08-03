@@ -312,6 +312,7 @@ function applyConfigToUi() {
   $("set-hidden").checked = !!c.show_hidden;
   $("set-thumbsize").value = c.thumb_max_edge;
   $("set-view").value = c.default_view_mode;
+  $("set-player").value = c.external_player || "";
 
   renderInboxOptions();
 }
@@ -343,6 +344,9 @@ function readConfigFromUi() {
   c.show_hidden = $("set-hidden").checked;
   c.thumb_max_edge = parseIntOr($("set-thumbsize").value, 320);
   c.default_view_mode = $("set-view").value;
+  // null, not "", so the backend's Option round-trips and normalize can drop a
+  // player that has since been uninstalled.
+  c.external_player = $("set-player").value.trim() || null;
 
   c.theme = state.theme;
   return c;
@@ -894,6 +898,12 @@ function shareRowHtml(share) {
       <td>${linkCell}</td>
       <td>${status}</td>
       <td class="sh-cell-actions">
+        ${share.is_file && isPlayableFile(share.display_path)
+          ? `<button class="icon-button" type="button" data-act="play" data-id="${escapeHtml(share.id)}" aria-label="Play"
+                     data-tip="Play this here, in your own media player. Nothing is streamed — it is your file.">
+               <span class="material-symbols-outlined">play_circle</span>
+             </button>`
+          : ""}
         <button class="icon-button" type="button" data-act="index" data-id="${escapeHtml(share.id)}" aria-label="Count files"
                 data-tip="Count the files and add up the size in this folder. Reads the folder only — nothing is changed.">
           <span class="material-symbols-outlined">calculate</span>
@@ -916,6 +926,19 @@ function shareRowHtml(share) {
         </button>
       </td>
     </tr>`;
+}
+
+/** Media a player is worth opening for. Deliberately wider than what a browser
+ *  can decode — .mkv and .avi are the whole reason the Play button exists. */
+const PLAYABLE_EXTS = [
+  "mp4", "m4v", "mkv", "avi", "mov", "wmv", "webm", "flv", "mpg", "mpeg", "ts", "m2ts", "ogv",
+  "3gp", "mp3", "m4a", "flac", "wav", "aac", "ogg", "oga", "opus", "wma", "aiff",
+];
+
+function isPlayableFile(name) {
+  const idx = String(name || "").lastIndexOf(".");
+  if (idx < 0) return false;
+  return PLAYABLE_EXTS.includes(name.slice(idx + 1).toLowerCase());
 }
 
 /** Show enough of the link to recognise it, not enough to use it over a
@@ -947,6 +970,13 @@ async function onSharesTableClick(event) {
       return startShareIndex(id);
     case "open":
       return callQuiet("show_in_explorer", { path: share.display_path });
+    case "play":
+      try {
+        await call("open_in_player", { path: share.display_path });
+      } catch (_err) {
+        /* already reported */
+      }
+      return;
     case "edit":
       return openShareEditor(id);
     case "regen":
@@ -1086,6 +1116,9 @@ const ACTION_LABELS = {
   download: "download",
   upload: "upload",
   thumb: "thumbnail",
+  // A link handed to an external player. Logged where it is issued, which is
+  // before — and sometimes instead of — any bytes moving.
+  play: "open in player",
   denied: "denied",
 };
 
@@ -1133,7 +1166,10 @@ function renderActivity() {
 
   const rows = state.activity.entries.filter((e) => {
     if (filter === "all") return true;
-    if (filter === "download") return e.kind === "download" || e.kind === "view" || e.kind === "upload";
+    if (filter === "download")
+      return (
+        e.kind === "download" || e.kind === "view" || e.kind === "upload" || e.kind === "play"
+      );
     if (filter === "auth") return e.kind === "auth" || e.kind === "auth_failed";
     if (filter === "denied") return e.kind === "denied" || e.kind === "auth_failed";
     return true;
@@ -1334,7 +1370,7 @@ function wire() {
     "set-keepawake", "set-hostcheck", "set-pin-enabled", "set-pin",
     "set-attempts", "set-lockout", "set-ttl", "set-uploads", "set-inbox",
     "set-maxupload", "set-thumbs", "set-zip", "set-hidden", "set-thumbsize",
-    "set-view",
+    "set-view", "set-player",
   ].forEach((id) => {
     const el = $(id);
     if (!el) return;
@@ -1355,6 +1391,17 @@ function wire() {
     const freed = await callQuiet("clear_thumb_cache");
     showToast("Freed " + formatBytes(freed || 0), "success");
     loadThumbStats();
+  });
+
+  $("set-player-detect").addEventListener("click", async () => {
+    const found = await callQuiet("detect_player");
+    if (!found) {
+      showToast("No player found in the usual places — paste the path instead", "info");
+      return;
+    }
+    $("set-player").value = found;
+    saveConfig();
+    showToast("Using " + found, "success");
   });
 
   $("revoke-all-btn").addEventListener("click", async () => {
@@ -2287,16 +2334,42 @@ async function loadBrowse() {
       const isDir = shareId ? row.is_dir : true;
       const name = shareId ? row.name : row.name;
       const target = shareId ? row.name : row.id;
+      // Their file, your player. The other machine mints a link; nothing is
+      // downloaded here first.
+      const play =
+        !isDir && isPlayableFile(name)
+          ? `<button class="icon-button" type="button" data-browse="play" data-target="${escapeHtml(name)}"
+                     aria-label="Play ${escapeHtml(name)}"
+                     data-tip="Play this from that device, in your media player. It streams over the network — nothing is copied here.">
+               <span class="material-symbols-outlined">play_circle</span>
+             </button>`
+          : "<span></span>";
       return `
       <div class="browse-row ${isDir ? "is-dir" : ""}" data-browse="${isDir ? "open" : "file"}"
            data-target="${escapeHtml(target)}">
         <span class="material-symbols-outlined browse-icon">${isDir ? "folder" : "draft"}</span>
         <span class="browse-name">${escapeHtml(name)}</span>
         <span class="browse-size">${shareId && !row.is_dir ? escapeHtml(row.size_text) : ""}</span>
-        <span></span>
+        ${play}
       </div>`;
     })
     .join("");
+}
+
+/// Play a file that lives on the device being browsed.
+///
+/// The path is built here from where the dialog currently is, so it is the same
+/// path the listing came from — and their end resolves it again anyway.
+async function playPeerFile(name) {
+  const { peerId, shareId, path } = state.browse;
+  if (!peerId || !shareId) return;
+  const rel = path ? path + "/" + name : name;
+  try {
+    await call("play_peer_file", { deviceId: peerId, shareId, path: rel });
+    showToast("Opening " + name + " in your player", "success");
+  } catch (_err) {
+    /* already reported */
+  }
 }
 
 // --- delegated actions -----------------------------------------------------
@@ -2532,7 +2605,11 @@ function wireDevices() {
   });
   $("browse-list").addEventListener("click", (event) => {
     const row = event.target.closest("[data-browse]");
-    if (!row || row.dataset.browse !== "open") return;
+    if (!row) return;
+    // The Play button sits inside the row and carries its own data-browse, so
+    // `closest` finds it first and the folder-open path below is not reached.
+    if (row.dataset.browse === "play") return playPeerFile(row.dataset.target);
+    if (row.dataset.browse !== "open") return;
     if (!state.browse.shareId) {
       state.browse.shareId = row.dataset.target;
       state.browse.path = "";

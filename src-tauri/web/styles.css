@@ -243,25 +243,22 @@ a { color: var(--primary); text-decoration: none; }
   text-align: center;
 }
 
+/* The app mark, in a filled disc. The SVG is inline in the markup rather than
+   fetched, so the very first screen still makes no image request — the reason
+   this used to be drawn with CSS borders. */
 .pin-mark {
   width: 56px;
   height: 56px;
   margin: 0 auto 18px;
   border-radius: 50%;
   background: var(--primary);
-  position: relative;
+  color: var(--primary-fg);
+  display: grid;
+  place-items: center;
 }
-/* Three concentric arcs — a "broadcasting" mark, drawn in CSS so there is no
-   image request on the very first screen. */
-.pin-mark::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  border: 3px solid var(--primary-fg);
-  border-bottom-color: transparent;
-  border-left-color: transparent;
-  transform: rotate(-45deg) scale(0.55);
+.pin-mark svg {
+  width: 30px;
+  height: 30px;
 }
 
 .pin-title { margin: 0 0 4px; font-size: 21px; font-weight: 700; letter-spacing: -0.01em; }
@@ -749,10 +746,35 @@ a { color: var(--primary); text-decoration: none; }
   text-align: center;
   color: #d4d4d8;
   padding: 24px;
-  max-width: 340px;
+  max-width: 360px;
 }
 .viewer-fallback .empty-icon { color: #71717a; }
 .viewer-fallback .btn { margin-top: 14px; }
+
+/* Handing the file to a real player. Shown instead of the dead end for a
+   format no browser decodes, and under the video for one it does — the
+   container can be readable while the codecs inside are not. */
+.viewer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+}
+.viewer-actions .btn { margin-top: 0; }
+.viewer-actions-under { margin-top: 10px; }
+
+/* Two rows so the buttons cannot push the video past the bottom of the
+   screen: the video takes what is left, the actions take what they need. */
+.viewer-media {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  justify-items: center;
+  gap: 10px;
+  width: 100%;
+  max-height: 100%;
+  min-height: 0;
+}
 
 .viewer-nav {
   position: absolute;
@@ -835,6 +857,73 @@ a { color: var(--primary); text-decoration: none; }
   padding: 14px 18px;
   padding-bottom: calc(14px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
+}
+
+/* --- play sheet: the desktop hand-off ------------------------------------ */
+
+.play-file {
+  margin: 0 0 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.play-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.play-link-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+/* Monospace and full-width: this is a string someone is about to copy, and a
+   proportional font makes an address hard to check at a glance. */
+.play-url {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.play-steps {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.play-steps code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+/* A rule with the word in the middle, so the two routes read as alternatives
+   rather than as steps one and two. */
+.play-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 14px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.play-or::before,
+.play-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
 }
 
 .dropzone {

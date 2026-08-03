@@ -27,7 +27,15 @@
     <!-- ========================== PIN gate ============================== -->
     <section id="screen-pin" class="screen screen-pin hidden">
       <div class="pin-card">
-        <div class="pin-mark" aria-hidden="true"></div>
+        <!-- Inline, not an <img>: this is the first screen, and it has to draw
+             before the browser has fetched anything else. -->
+        <div class="pin-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M3.5 7.4H8.1L9.5 10.4H12.4A1.7 1.7 0 0 1 14.1 12.1V19.9A1.7 1.7 0 0 1 12.4 21.6H3.5A1.7 1.7 0 0 1 1.8 19.9V9.1A1.7 1.7 0 0 1 3.5 7.4Z" fill="currentColor" />
+            <path d="M18.1 10.4A4 4 0 0 0 14.1 6.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
+            <path d="M21.1 10.4A7 7 0 0 0 14.1 3.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
+          </svg>
+        </div>
         <h1 class="pin-title">LAN Share</h1>
         <p class="pin-sub" id="pin-host">Enter the PIN shown on the host</p>
 
@@ -153,6 +161,40 @@
         </div>
         <div class="sheet-foot">
           <button id="upload-start" class="btn btn-primary btn-block" type="button" disabled>Upload</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================== Play sheet ============================ -->
+    <!-- Desktop only. Phones hand the stream straight to a player; a desktop
+         browser has no such mechanism, so this says what is on offer instead
+         of dropping a file into Downloads and going quiet. -->
+    <div id="play-sheet" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-label="Play in another app">
+      <div class="sheet">
+        <div class="sheet-head">
+          <h3 class="sheet-title" id="play-title">Play in your media player</h3>
+          <button id="play-close" class="icon-btn" type="button" aria-label="Close" title="Close" data-icon="close"></button>
+        </div>
+        <div class="sheet-body">
+          <p class="play-file" id="play-file"></p>
+
+          <label class="play-label" for="play-url">Stream link</label>
+          <div class="play-link-row">
+            <input id="play-url" class="play-url" type="text" readonly spellcheck="false" />
+            <button id="play-copy" class="btn btn-primary" type="button">Copy</button>
+          </div>
+          <p class="play-steps">
+            In VLC: <strong>Media &rarr; Open Network Stream</strong> (Ctrl+N), paste, press Play.
+            Works in mpv, MPC-HC and PotPlayer the same way.
+          </p>
+
+          <div class="play-or"><span>or</span></div>
+
+          <button id="play-playlist" class="btn btn-block" type="button">Download playlist</button>
+          <p class="play-steps">
+            Saves a one-line <code>.m3u</code>. Click it in your downloads and it opens in
+            whichever player handles playlists.
+          </p>
         </div>
       </div>
     </div>

@@ -31,6 +31,7 @@ use crate::{
         rename_peer, set_device_name, set_discoverable, set_peer_auto_accept, set_peer_blocked,
         start_pair_task, start_send_files_task, unpair_peer,
         create_handoff, revoke_handoff, list_handoffs,
+        detect_player, open_in_player, play_peer_file,
     },
     tasks::{
         add_share, add_shares, cancel_task, clear_activity_log, clear_task, clear_thumb_cache,
@@ -148,6 +149,10 @@ fn main() {
             accept_offer,
             decline_offer,
             peer_browse,
+            // external players
+            open_in_player,
+            detect_player,
+            play_peer_file,
             // send to phone
             create_handoff,
             revoke_handoff,

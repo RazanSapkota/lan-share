@@ -80,6 +80,10 @@ pub(crate) fn build_router(ctx: ServerCtx) -> Router {
         .route("/assets/app.js", get(routes::asset_js))
         .route("/assets/styles.css", get(routes::asset_css))
         .route("/assets/icon.svg", get(routes::asset_icon))
+        // PNG copies for the manifest: Chrome on Android will not offer to
+        // install a site whose only icon is an SVG.
+        .route("/assets/icon-192.png", get(routes::asset_icon_192))
+        .route("/assets/icon-512.png", get(routes::asset_icon_512))
         .route("/favicon.ico", get(routes::favicon))
         .route("/manifest.webmanifest", get(routes::manifest))
         // --- public api ---
@@ -111,6 +115,16 @@ pub(crate) fn build_router(ctx: ServerCtx) -> Router {
         .route("/api/thumb", get(routes::thumb))
         .route("/files/{share}/{*path}", get(routes::serve_inline))
         .route("/download/{share}/{*path}", get(routes::serve_attachment))
+        // --- external players ---
+        // The two GETs authenticate on the play token in the path and nothing
+        // else, which is the only way a player -- which cannot hold a cookie --
+        // gets past the PIN. The token names one file and expires; see
+        // `models::PlayToken`. The trailing name is decorative, so both forms
+        // are registered rather than relying on `{*name}` to match nothing.
+        .route("/api/play/link", post(routes::play_link))
+        .route("/play/{token}", get(routes::play_stream))
+        .route("/play/{token}/{*name}", get(routes::play_stream_named))
+        .route("/playlist/{token}", get(routes::play_playlist))
         // Both root forms are registered explicitly: `{*path}` does not match
         // an empty segment, so `/zip/{share}` and `/zip/{share}/` would
         // otherwise fall through to the SPA fallback and return HTML.
@@ -220,6 +234,7 @@ pub(crate) fn start_server_impl(app: &tauri::AppHandle, state: &AppState) -> Res
         settings: Arc::clone(&state.settings),
         shares: Arc::clone(&state.shares),
         sessions: Arc::clone(&state.sessions),
+        play_tokens: Arc::clone(&state.play_tokens),
         pin_attempts: Arc::clone(&state.pin_attempts),
         activity: Arc::clone(&state.activity),
         next_activity_id: Arc::clone(&state.next_activity_id),
@@ -386,9 +401,14 @@ pub(crate) fn stop_server_impl(state: &AppState) -> Result<ServerStatus> {
     state.discovery_bound.store(false, Ordering::Relaxed);
     state.discovery_started_ms.store(0, Ordering::Relaxed);
 
-    // Sessions are per-server-run: stopping the server logs everyone out.
+    // Sessions are per-server-run: stopping the server logs everyone out. Play
+    // links go with them -- a link handed to a player is no more durable than
+    // the session that minted it.
     if let Ok(mut sessions) = state.sessions.lock() {
         sessions.clear();
+    }
+    if let Ok(mut play) = state.play_tokens.lock() {
+        play.clear();
     }
     if let Ok(mut attempts) = state.pin_attempts.lock() {
         attempts.clear();

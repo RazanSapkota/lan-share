@@ -87,6 +87,15 @@ pub(crate) fn normalize(config: &mut AppConfig) {
     config.max_offer_files = config.max_offer_files.clamp(1, 10_000);
     config.max_offer_bytes = config.max_offer_bytes.max(1);
 
+    // A player that has been uninstalled or moved would otherwise fail on every
+    // Play with an error from the shell rather than falling back to the OS
+    // default, which is what an empty setting means.
+    config.external_player = config
+        .external_player
+        .take()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty() && std::path::Path::new(p).is_file());
+
     normalize_inner(config);
 }
 

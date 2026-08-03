@@ -1042,6 +1042,140 @@ pub(crate) fn show_in_explorer(path: String) -> Result<(), String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// External players
+// ---------------------------------------------------------------------------
+
+/// Extensions this command will not hand to the shell.
+///
+/// `open_in_player` exists to open media with whatever the OS has registered,
+/// which means it ends in "run the default handler for this file". For a `.exe`
+/// or a `.lnk` the default handler is "execute it", so the list of things a
+/// Play button must refuse is exactly the list of things that are programs.
+const NEVER_LAUNCH: &[&str] = &[
+    "exe", "com", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "msi",
+    "msp", "scr", "cpl", "hta", "reg", "lnk", "pif", "url", "inf", "jar", "app", "sh",
+];
+
+/// Whether a Play button may hand this file to the shell.
+///
+/// Pure and separate from the command so the rule is testable without spawning
+/// anything -- which is the one thing a test of this must not do.
+pub(crate) fn is_launchable(ext: &str) -> bool {
+    !NEVER_LAUNCH.contains(&ext.to_ascii_lowercase().as_str())
+}
+
+/// Play a local file: the configured player if there is one, otherwise whatever
+/// the OS uses for that file type.
+#[tauri::command]
+pub(crate) fn open_in_player(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let raw = path.trim();
+    if raw.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    let target = dunce::simplified(std::path::Path::new(raw)).to_path_buf();
+    if !target.is_file() {
+        return Err(format!("no such file: {}", target.display()));
+    }
+    let ext = utils::ext_of(&target.to_string_lossy());
+    if !is_launchable(&ext) {
+        return Err(format!("{ext} files are programs, not media"));
+    }
+
+    let player = config::load_config_impl(&app).external_player;
+    launch_player(player.as_deref(), &target.to_string_lossy())
+}
+
+/// Hand an argument -- a local path, or a URL for a peer's file -- to the
+/// player. Split out because the peer path needs the same launching without the
+/// local-file checks above.
+pub(crate) fn launch_player(player: Option<&str>, argument: &str) -> Result<(), String> {
+    if let Some(player) = player.filter(|p| !p.trim().is_empty()) {
+        // `.arg` and not a hand-built command line: this one is a real argv,
+        // so a space or a quote in the path is the standard library's problem
+        // rather than ours.
+        let mut command = std::process::Command::new(player);
+        command.arg(argument);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt as _;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        return command
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("failed to start {player}: {e}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // `start` needs the empty "" title argument, or it treats a quoted path
+        // as the window title and opens a console instead of the file.
+        let mut command = std::process::Command::new("cmd");
+        command.raw_arg(format!("/C start \"\" \"{argument}\""));
+        command.creation_flags(0x0800_0000);
+        command
+            .spawn()
+            .map_err(|e| format!("failed to open the default player: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(argument)
+            .spawn()
+            .map_err(|e| format!("failed to open the default player: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(argument)
+            .spawn()
+            .map_err(|e| format!("failed to open the default player: {e}"))?;
+        Ok(())
+    }
+}
+
+/// Look for VLC in the places it installs itself, for the Detect button.
+///
+/// Returns the path rather than setting it, so the user sees what was found
+/// before it becomes their setting.
+#[tauri::command]
+pub(crate) fn detect_player() -> Option<String> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+            if let Ok(base) = std::env::var(var) {
+                candidates.push(std::path::PathBuf::from(base).join("VideoLAN\\VLC\\vlc.exe"));
+            }
+        }
+        candidates.push(std::path::PathBuf::from("C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(std::path::PathBuf::from("/Applications/VLC.app/Contents/MacOS/VLC"));
+        candidates.push(std::path::PathBuf::from("/Applications/IINA.app/Contents/MacOS/IINA"));
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        for dir in ["/usr/bin", "/usr/local/bin", "/snap/bin", "/var/lib/flatpak/exports/bin"] {
+            candidates.push(std::path::PathBuf::from(dir).join("vlc"));
+            candidates.push(std::path::PathBuf::from(dir).join("mpv"));
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.display().to_string())
+}
+
 #[tauri::command]
 pub(crate) fn open_url(url: String) -> Result<(), String> {
     let url = url.trim();
@@ -1917,6 +2051,77 @@ pub(crate) async fn peer_browse(
     crate::peerclient::get_authed(&address, &route, &token)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Play a file that lives on a paired device, without downloading it first.
+///
+/// Their machine mints the play link; ours hands it to a player. The player
+/// never learns the pair token -- it gets a URL good for that one file.
+#[tauri::command]
+pub(crate) async fn play_peer_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+    share_id: String,
+    path: String,
+) -> Result<String, String> {
+    let (token, address) = {
+        let registry = state
+            .peers
+            .read()
+            .map_err(|_| "peer state poisoned".to_string())?;
+        let peer = registry
+            .by_id(&device_id)
+            .cloned()
+            .ok_or_else(|| "that device is not paired".to_string())?;
+        if peer.blocked {
+            return Err("that device is blocked".to_string());
+        }
+        let address = resolve_peer_address(&state, &peer)
+            .ok_or_else(|| format!("{} is not reachable right now", peer.name))?;
+        (peer.out_token, address)
+    };
+
+    let link = crate::peerclient::play_link(&address, &token, &share_id, &path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let url = format!(
+        "http://{address}/play/{}/{}",
+        utils::url_encode_segment(&link.token),
+        utils::url_encode_segment(&link.name)
+    );
+
+    let player = config::load_config_impl(&app).external_player;
+    if player.is_some() {
+        launch_player(player.as_deref(), &url)?;
+    } else {
+        // No configured player, so we cannot hand over a bare URL: the OS would
+        // route it to a browser, which is the one program that cannot play it.
+        // A one-line playlist turns it into a file type every player claims.
+        let playlist = write_play_playlist(&app, &link.name, &url)?;
+        launch_player(None, &playlist)?;
+    }
+    Ok(url)
+}
+
+/// Write the one-line `.m3u` used to hand a peer's URL to the default player.
+///
+/// One fixed filename, overwritten each time: the player reads it the moment it
+/// starts, so there is nothing to keep, and a per-play file would leave a
+/// growing pile of dead playlists in the cache directory.
+fn write_play_playlist(app: &tauri::AppHandle, name: &str, url: &str) -> Result<String, String> {
+    use tauri::Manager as _;
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("no cache directory: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create the cache dir: {e}"))?;
+    let file = dir.join("lanshare-play.m3u");
+    let title = name.replace(['\r', '\n'], " ");
+    std::fs::write(&file, format!("#EXTM3U\n#EXTINF:-1,{title}\n{url}\n"))
+        .map_err(|e| format!("could not write the playlist: {e}"))?;
+    Ok(file.display().to_string())
 }
 
 // ---------------------------------------------------------------------------

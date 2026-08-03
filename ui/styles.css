@@ -2782,6 +2782,8 @@ input[type="text"]:disabled {
 }
 .act-download { color: var(--primary); }
 .act-upload { background: color-mix(in srgb, var(--accent-success) 20%, transparent); color: var(--accent-success); }
+/* A link issued to an external player: a decision, not yet a transfer. */
+.act-play { background: color-mix(in srgb, var(--accent-warn) 18%, transparent); color: var(--accent-warn); }
 .act-denied,
 .act-auth_failed { background: color-mix(in srgb, var(--accent-danger) 20%, transparent); color: var(--accent-danger); }
 

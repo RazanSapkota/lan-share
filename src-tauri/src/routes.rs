@@ -194,10 +194,36 @@ pub(crate) async fn asset_icon() -> Response {
         .into_response()
 }
 
+/// The 16/32 `.ico`, for browsers that ignore an SVG favicon.
+///
+/// This used to answer `204` -- browsers ask for it unprompted, and a 404 per
+/// page load is noise -- but an empty answer means a blank tab icon on anything
+/// that will not take the SVG, which is a poor showing for an app whose whole
+/// job is to be opened in someone else's browser.
 pub(crate) async fn favicon() -> Response {
-    // 204 rather than a 404: browsers request this unprompted, and a 404 in the
-    // activity log on every page load is noise.
-    StatusCode::NO_CONTENT.into_response()
+    binary_asset(assets::FAVICON_ICO, "image/x-icon")
+}
+
+pub(crate) async fn asset_icon_192() -> Response {
+    binary_asset(assets::ICON_192_PNG, "image/png")
+}
+
+pub(crate) async fn asset_icon_512() -> Response {
+    binary_asset(assets::ICON_512_PNG, "image/png")
+}
+
+/// Baked into the binary and only ever changing with it, so a long cache is
+/// safe -- the same reasoning `asset_icon` uses.
+fn binary_asset(body: &'static [u8], mime: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 pub(crate) async fn manifest() -> Response {
@@ -229,6 +255,7 @@ pub(crate) async fn session_info(State(ctx): State<ServerCtx>, request: Request)
     let (parts, _) = request.into_parts();
     let settings = settings_of(&ctx);
     auth::sweep_sessions(&ctx.sessions, settings.session_ttl_hours);
+    auth::sweep_play_tokens(&ctx.play_tokens);
 
     let ip = auth::client_ip(&parts);
     let ua = auth::user_agent(&parts);
@@ -589,13 +616,8 @@ pub(crate) async fn serve_attachment(
     serve_file(ctx, session, share_id, rel, request, true).await
 }
 
-/// The core streaming path.
-///
-/// `tower_http::services::ServeFile` does the genuinely hard part: `Range` ->
-/// `206` + `Content-Range`, `If-Range`, `Last-Modified`/`If-Modified-Since`,
-/// `416` on an unsatisfiable range, `HEAD`, and chunked streaming that never
-/// buffers the file. Getting any of that wrong means iOS Safari silently
-/// refuses to play the video, with no error anywhere.
+/// Session-authenticated file serving. Resolves the share, then hands off to
+/// `serve_resolved`, which is also where the play-token route lands.
 async fn serve_file(
     ctx: ServerCtx,
     session: AuthedSession,
@@ -609,15 +631,49 @@ async fn serve_file(
         Err(resp) => return resp,
     };
 
-    let path = match shares::resolve_file(&share, &rel) {
+    serve_resolved(
+        &ctx,
+        &share,
+        &rel,
+        request,
+        attachment,
+        &session.client_ip.to_string(),
+        &session.user_agent,
+    )
+    .await
+}
+
+/// The core streaming path.
+///
+/// `tower_http::services::ServeFile` does the genuinely hard part: `Range` ->
+/// `206` + `Content-Range`, `If-Range`, `Last-Modified`/`If-Modified-Since`,
+/// `416` on an unsatisfiable range, `HEAD`, and chunked streaming that never
+/// buffers the file. Getting any of that wrong means iOS Safari silently
+/// refuses to play the video, with no error anywhere -- and an external player
+/// scrubbing a two-hour film leans on the same `Range` handling.
+///
+/// Takes the actor as plain strings rather than an `AuthedSession`, because a
+/// play link has no session: the whole point of routing both through here is
+/// that a player and a browser get byte-for-byte the same serving code.
+async fn serve_resolved(
+    ctx: &ServerCtx,
+    share: &crate::models::ResolvedShare,
+    rel: &str,
+    request: Request,
+    attachment: bool,
+    client_ip: &str,
+    actor: &str,
+) -> Response {
+    let rel = rel.to_string();
+    let path = match shares::resolve_file(share, &rel) {
         Ok(p) => p,
         Err(reject) => {
             if reject == PathReject::Escapes || reject.status_code() == 400 {
                 ctx.log_event(
                     "denied",
                     "error",
-                    &session.client_ip.to_string(),
-                    &session.user_agent,
+                    client_ip,
+                    actor,
                     Some((&share.cfg.id, &share.cfg.name)),
                     Some(rel.clone()),
                     Some(reject.message()),
@@ -649,8 +705,8 @@ async fn serve_file(
             ctx.log_event(
                 "download",
                 "error",
-                &session.client_ip.to_string(),
-                &session.user_agent,
+                client_ip,
+                actor,
                 Some((&share.cfg.id, &share.cfg.name)),
                 Some(rel.clone()),
                 Some("file is locked or unreadable".to_string()),
@@ -661,8 +717,8 @@ async fn serve_file(
 
     let entry_id = ctx.log(ActivityEntry {
         at_ms: now_ms(),
-        client_ip: session.client_ip.to_string(),
-        user_agent: session.user_agent.clone(),
+        client_ip: client_ip.to_string(),
+        user_agent: actor.to_string(),
         kind: if attachment { "download" } else { "view" }.to_string(),
         share_id: Some(share.cfg.id.clone()),
         share_name: Some(share.cfg.name.clone()),
@@ -697,7 +753,239 @@ async fn serve_file(
         HeaderValue::from_static("nosniff"),
     );
 
-    Response::from_parts(parts, Body::new(CountingBody::new(body, ctx, entry_id)))
+    Response::from_parts(
+        parts,
+        Body::new(CountingBody::new(body, ctx.clone(), entry_id)),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Play links -- handing a file to an external player
+// ---------------------------------------------------------------------------
+//
+// No browser decodes Matroska, and no codec can be installed into one to change
+// that. The file is perfectly playable; the software looking at it is just the
+// wrong software. So mint a link and let VLC (or mpv, or MX Player, or the TV)
+// do what it already does well.
+//
+// The link cannot carry our cookie -- a player is not a browser and has no
+// access to one -- so the credential rides in the path. `PlayToken` is the
+// narrow shape that makes that acceptable: one file, six hours, and accepted
+// here and nowhere else.
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PlayLinkBody {
+    share: String,
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PlayLinkResponse {
+    token: String,
+    name: String,
+    expires_ms: u64,
+}
+
+/// Mint a play link for a file this session can already read.
+///
+/// The share and path go through exactly the checks `serve_file` applies, so
+/// there is no file reachable through a play link that was not already
+/// reachable through the session that asked for it.
+pub(crate) async fn play_link(
+    State(ctx): State<ServerCtx>,
+    session: AuthedSession,
+    headers: HeaderMap,
+    Json(body): Json<PlayLinkBody>,
+) -> Response {
+    if !headers.contains_key(crate::models::CSRF_HEADER) {
+        return json_error(StatusCode::FORBIDDEN, "csrf");
+    }
+
+    let share = match scoped_share(&ctx, &session, &body.share) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    let path = match shares::resolve_file(&share, &body.path) {
+        Ok(p) => p,
+        Err(reject) => {
+            if reject == PathReject::Escapes || reject.status_code() == 400 {
+                ctx.log_event(
+                    "denied",
+                    "error",
+                    &session.client_ip.to_string(),
+                    &session.user_agent,
+                    Some((&share.cfg.id, &share.cfg.name)),
+                    Some(body.path.clone()),
+                    Some(reject.message()),
+                );
+            }
+            return reject_to_response(&reject);
+        }
+    };
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "video".to_string());
+
+    let token = auth::create_play_token(
+        &ctx.play_tokens,
+        &share.cfg.id,
+        &body.path,
+        &file_name,
+    );
+
+    // Logged as its own event: handing a file to another application is worth
+    // seeing in the Activity list, and it happens some time before the bytes
+    // start moving -- or instead of it, if the player never opens.
+    ctx.log_event(
+        "play",
+        "ok",
+        &session.client_ip.to_string(),
+        &session.user_agent,
+        Some((&share.cfg.id, &share.cfg.name)),
+        Some(body.path.clone()),
+        Some("opened in an external player".to_string()),
+    );
+
+    Json(PlayLinkResponse {
+        token,
+        name: file_name,
+        expires_ms: crate::models::PLAY_TOKEN_TTL_MS,
+    })
+    .into_response()
+}
+
+/// Resolve a play token to a live share. `None` covers expired, revoked, and a
+/// share that has since been switched off or deleted.
+fn play_target(ctx: &ServerCtx, token: &str) -> Option<(crate::models::PlayToken, crate::models::ResolvedShare)> {
+    let play = auth::resolve_play_token(&ctx.play_tokens, token)?;
+    let share = ctx
+        .shares
+        .read()
+        .ok()?
+        .by_id(&play.share_id)
+        .filter(|s| s.cfg.enabled)
+        .filter(|s| shares::is_servable(s))
+        .cloned()?;
+    Some((play, share))
+}
+
+pub(crate) async fn play_stream(
+    State(ctx): State<ServerCtx>,
+    AxPath(token): AxPath<String>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    request: Request,
+) -> Response {
+    play_stream_inner(ctx, token, peer, request).await
+}
+
+/// Same, with a trailing filename. Purely cosmetic -- players guess the
+/// container from the extension they can see in the URL, and a name in the
+/// address bar beats an opaque token. It is NEVER used to build a path: the
+/// path comes from the token, so `.../play/TOKEN/../../secret.txt` still serves
+/// the file the token names.
+pub(crate) async fn play_stream_named(
+    State(ctx): State<ServerCtx>,
+    AxPath((token, _name)): AxPath<(String, String)>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    request: Request,
+) -> Response {
+    play_stream_inner(ctx, token, peer, request).await
+}
+
+async fn play_stream_inner(
+    ctx: ServerCtx,
+    token: String,
+    peer: std::net::SocketAddr,
+    request: Request,
+) -> Response {
+    // 404 rather than 401: an expired link is indistinguishable from one that
+    // never existed, which is what stops this being a probe oracle.
+    let Some((play, share)) = play_target(&ctx, &token) else {
+        return json_error(StatusCode::NOT_FOUND, "not_found");
+    };
+
+    let ua = request
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("external player")
+        .chars()
+        .take(200)
+        .collect::<String>();
+
+    serve_resolved(
+        &ctx,
+        &share,
+        &play.rel,
+        request,
+        false,
+        &peer.ip().to_string(),
+        &ua,
+    )
+    .await
+}
+
+/// A one-entry `.m3u`, which is the closest thing to a universal "open this in
+/// whatever plays video" handoff: every desktop and mobile player registers for
+/// it, and it needs no custom URL scheme and no app to be installed in advance.
+pub(crate) async fn play_playlist(
+    State(ctx): State<ServerCtx>,
+    AxPath(token): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((play, _share)) = play_target(&ctx, &token) else {
+        return json_error(StatusCode::NOT_FOUND, "not_found");
+    };
+
+    // The host the client actually reached us on, already validated by
+    // `host_guard`. Guessing a LAN address here instead would hand the player
+    // an address that may not route from where it is standing.
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if host.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "no_host");
+    }
+
+    // `url_encode_segment`, not `url_encode`: the player picks its demuxer from
+    // the extension it sees, and `movie%2Emkv` has none.
+    let url = format!(
+        "http://{host}/play/{}/{}",
+        utils::url_encode_segment(&token),
+        utils::url_encode_segment(&play.file_name)
+    );
+    // The title line is what the player shows; a newline in a filename would
+    // otherwise forge a second playlist entry.
+    let title = play.file_name.replace(['\r', '\n'], " ");
+    let body = format!("#EXTM3U\n#EXTINF:-1,{title}\n{url}\n");
+
+    let download_name = format!("{}.m3u", utils::header_safe_ascii(&play.file_name));
+    // `attachment`, and not because of the usual reasons. Served inline,
+    // Firefox would offer its "open with" dialog -- a real chooser, which is
+    // tempting -- but desktop Chrome navigates any `audio/*` document into its
+    // own media viewer, which cannot play a playlist. That trades a file in the
+    // downloads bar for a broken player page, on the more common browser.
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "audio/x-mpegurl".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{download_name}\""),
+            ),
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=0, must-revalidate".to_string(),
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------

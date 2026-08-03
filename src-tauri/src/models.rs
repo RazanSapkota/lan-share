@@ -56,6 +56,19 @@ pub(crate) const PEER_EVICT_AFTER_MS: u64 = 300_000;
 pub(crate) const DISCOVERED_CAP: usize = 256;
 pub(crate) const DEVICE_NAME_MAX: usize = 48;
 
+// --- play links ------------------------------------------------------------
+
+/// How long an external-player link stays valid.
+///
+/// Six hours, because the thing on the other end is a film: a 30-minute token
+/// dies while you are still watching it, and one that never expires is a
+/// permanent hole punched through the PIN for whoever the link reached.
+pub(crate) const PLAY_TOKEN_TTL_MS: u64 = 6 * 3600 * 1000;
+/// Live links, at most. Evicts the soonest-to-expire rather than refusing a new
+/// one -- being unable to play the file you just tapped is a worse failure than
+/// cutting short a link somebody probably finished with.
+pub(crate) const PLAY_TOKEN_CAP: usize = 64;
+
 pub(crate) const PAIR_TTL_MS: u64 = 120_000;
 pub(crate) const PAIR_MAX_ATTEMPTS: u32 = 5;
 pub(crate) const PAIR_LOCKOUT_SECONDS: u32 = 60;
@@ -573,6 +586,26 @@ pub(crate) struct SessionView {
     pub(crate) last_seen_ms: u64,
 }
 
+/// A link handed to an external player (VLC and friends).
+///
+/// Deliberately NOT a session. A player cannot send our cookie, so the
+/// credential has to ride in the URL -- which is exactly what the session
+/// design refused, and for good reason. This is the narrow version of it: one
+/// file, six hours, accepted only on `/play/*` and `/playlist/*`, so a link
+/// pasted into a group chat leaks the film someone was already watching rather
+/// than the run of the whole share.
+#[derive(Debug, Clone)]
+pub(crate) struct PlayToken {
+    pub(crate) share_id: String,
+    /// Path within the share, exactly as minted. Re-resolved on every fetch, so
+    /// a share switched off mid-film stops the stream.
+    pub(crate) rel: String,
+    /// For the playlist title and the cosmetic tail of the URL -- players guess
+    /// the format from the extension they see.
+    pub(crate) file_name: String,
+    pub(crate) expires_ms: u64,
+}
+
 /// Failed-PIN backoff, per client IP.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AttemptState {
@@ -740,6 +773,9 @@ pub(crate) struct ServerCtx {
     pub(crate) settings: Arc<RwLock<ServerSettings>>,
     pub(crate) shares: Arc<RwLock<ShareRegistry>>,
     pub(crate) sessions: Arc<Mutex<HashMap<String, Session>>>,
+    /// Live external-player links. In memory beside the sessions, and gone for
+    /// the same reason when the server stops.
+    pub(crate) play_tokens: Arc<Mutex<HashMap<String, PlayToken>>>,
     pub(crate) pin_attempts: Arc<Mutex<HashMap<IpAddr, AttemptState>>>,
     pub(crate) activity: Arc<Mutex<VecDeque<ActivityEntry>>>,
     pub(crate) next_activity_id: Arc<AtomicU64>,
@@ -963,6 +999,10 @@ pub(crate) struct AppConfig {
     pub(crate) thumb_quality: u8,
     #[serde(default = "default_thumb_cache_mb")]
     pub(crate) thumb_cache_max_mb: u64,
+    /// Path to a media player to hand files to (VLC, mpv, whatever). Empty =
+    /// use whatever the OS has registered for the file type.
+    #[serde(default)]
+    pub(crate) external_player: Option<String>,
     #[serde(default)]
     pub(crate) show_hidden: bool,
     /// Case-insensitive exact names always hidden, on top of the OS hidden bit.
@@ -1112,6 +1152,7 @@ impl Default for AppConfig {
             thumb_max_edge: default_thumb_max_edge(),
             thumb_quality: default_thumb_quality(),
             thumb_cache_max_mb: default_thumb_cache_mb(),
+            external_player: None,
             show_hidden: false,
             hidden_names: default_hidden_names(),
             allow_folder_zip: true,
@@ -1168,6 +1209,10 @@ pub(crate) struct AppState {
 
     /// Browser sessions, keyed by opaque token.
     pub(crate) sessions: Arc<Mutex<HashMap<String, Session>>>,
+
+    /// Links minted for external players. Same lifetime as the sessions: a
+    /// stopped server invalidates every one of them.
+    pub(crate) play_tokens: Arc<Mutex<HashMap<String, PlayToken>>>,
 
     /// Failed-PIN backoff, keyed by client IP.
     pub(crate) pin_attempts: Arc<Mutex<HashMap<IpAddr, AttemptState>>>,
@@ -1233,6 +1278,7 @@ impl AppState {
             settings: Arc::new(RwLock::new(ServerSettings::default())),
             shares: Arc::new(RwLock::new(ShareRegistry::default())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            play_tokens: Arc::new(Mutex::new(HashMap::new())),
             pin_attempts: Arc::new(Mutex::new(HashMap::new())),
             activity: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
             next_activity_id: Arc::new(AtomicU64::new(0)),

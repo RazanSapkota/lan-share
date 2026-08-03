@@ -259,6 +259,163 @@
   }
 
   // ============================================================
+  // 5b  Handing a file to a real media player
+  // ============================================================
+  //
+  // No browser decodes Matroska, and none can be taught to: there is no codec
+  // to install, and VLC is a player rather than something a page can borrow
+  // from. What the viewer's device almost certainly does have is a player that
+  // reads the file fine. So ask the server for a link and hand the stream over.
+  //
+  // The link is a play token, not our session: a player cannot hold a cookie.
+  // It names one file and expires — see `models::PlayToken`.
+
+  const IS_ANDROID = /Android/i.test(navigator.userAgent);
+  const IS_IOS =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    // iPadOS 13+ reports itself as a Mac; the touch points give it away.
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+  async function playLink(shareId, path) {
+    const link = await api("/api/play/link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ share: shareId, path }),
+    });
+    const name = encodeURIComponent(link.name).replace(/%2E/gi, ".");
+    return {
+      // Absolute: a player is a separate application and has no page to be
+      // relative to.
+      url: location.origin + "/play/" + link.token + "/" + name,
+      playlist: location.origin + "/playlist/" + link.token,
+      name: link.name,
+    };
+  }
+
+  /// Send the file to whatever plays video on this device.
+  ///
+  /// Three routes, because the platforms genuinely differ:
+  ///  - Android takes an intent URL, and shows a real app chooser. No `package=`
+  ///    is pinned, so it offers VLC, MX Player or whatever is installed rather
+  ///    than insisting on one, and `browser_fallback_url` catches a device with
+  ///    none of them.
+  ///  - iOS has no intent mechanism; VLC registers a callback scheme instead.
+  ///  - Desktop has neither. No browser exposes an app chooser, so there is
+  ///    nothing to call and nothing to fall back to — the sheet asks instead.
+  async function openInPlayer(shareId, path) {
+    let link;
+    try {
+      link = await playLink(shareId, path);
+    } catch (err) {
+      if (err.message !== "unauthorized") toast("Couldn't create a play link", "error");
+      return;
+    }
+
+    if (IS_ANDROID) {
+      const intent =
+        "intent://" +
+        link.url.replace(/^https?:\/\//, "") +
+        "#Intent;scheme=http;action=android.intent.action.VIEW;type=video/*" +
+        ";S.browser_fallback_url=" +
+        encodeURIComponent(link.playlist) +
+        ";end";
+      location.href = intent;
+      return;
+    }
+
+    if (IS_IOS) {
+      // A top-level navigation, not a hidden iframe: our own CSP is
+      // `default-src 'self'`, which frame-src inherits, so an iframe pointing at
+      // a custom scheme is blocked before iOS ever sees it. A navigation is not
+      // governed by CSP at all, and a scheme with no handler leaves the gallery
+      // where it is — Safari just says it cannot open the address.
+      toast("Opening in VLC — if nothing happens, use Copy link", "info");
+      location.href =
+        "vlc-x-callback://x-callback-url/stream?url=" + encodeURIComponent(link.url);
+      return;
+    }
+
+    // Desktop. There is no chooser to call: no browser exposes one, and
+    // navigating straight to the .m3u just drops a file into Downloads and
+    // leaves the page looking like the button did nothing. Show what is on
+    // offer instead and let the person pick.
+    showPlaySheet(link);
+  }
+
+  function showPlaySheet(link) {
+    $("play-file").textContent = link.name;
+    $("play-url").value = link.url;
+    $("play-sheet").dataset.playlist = link.playlist;
+    $("play-sheet").classList.remove("hidden");
+    // Pre-selected, so Ctrl+C works without touching the Copy button.
+    const field = $("play-url");
+    field.focus();
+    field.setSelectionRange(0, field.value.length);
+  }
+
+  function closePlaySheet() {
+    $("play-sheet").classList.add("hidden");
+  }
+
+  /// Put a string on the clipboard.
+  ///
+  /// `navigator.clipboard` needs a secure context and a plain-HTTP LAN address
+  /// is not one, so the old selection route is not a nicety here -- on most of
+  /// the devices this app runs on, it is the only one that works.
+  async function copyToClipboard(value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (_err) {
+      /* fall through */
+    }
+    const field = document.createElement("textarea");
+    field.value = value;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (_e) {
+      ok = false;
+    }
+    field.remove();
+    return ok;
+  }
+
+  async function copyPlayUrl() {
+    const field = $("play-url");
+    // Selected either way: if the copy fails there is at least something to
+    // press Ctrl+C on.
+    field.focus();
+    field.setSelectionRange(0, field.value.length);
+    if (await copyToClipboard(field.value)) {
+      toast("Copied — paste it into VLC with Ctrl+N", "success");
+    } else {
+      toast("Copy failed — the link is selected, press Ctrl+C", "error");
+    }
+  }
+
+  async function copyStreamLink(shareId, path) {
+    let link;
+    try {
+      link = await playLink(shareId, path);
+    } catch (err) {
+      if (err.message !== "unauthorized") toast("Couldn't create a play link", "error");
+      return;
+    }
+    if (await copyToClipboard(link.url)) {
+      toast("Link copied — paste it into VLC → Open Network Stream", "success");
+    } else {
+      // Nowhere to paste from, so show the link instead of claiming success.
+      showPlaySheet(link);
+    }
+  }
+
+  // ============================================================
   // 6  Router — query strings, not path routes
   // ============================================================
   //
@@ -814,15 +971,35 @@
       entry.size_text + (entry.mtime_ms ? " · " + formatDate(entry.mtime_ms) : "");
 
     const stage = $("viewer-stage");
+    // What the play buttons act on. Read at click time rather than closed over,
+    // so stepping to the next file with the arrows cannot leave a stale target
+    // behind on a button that was never re-rendered.
+    stage.dataset.playShare = shareId;
+    stage.dataset.playPath = rel;
 
-    if (!entry.playable) {
-      // .mkv, .avi, .heic and friends: no browser decodes these. A broken
-      // <video> element with an invisible failure is worse than saying so.
+    const isMedia = entry.kind === "video" || entry.kind === "audio";
+
+    if (!entry.playable && isMedia) {
+      // .mkv, .avi, .wmv: the file is fine, the software looking at it is the
+      // wrong software. Nothing can be installed into a browser to fix that, so
+      // offer the one thing that does work — the player already on this device.
       stage.innerHTML = `
         <div class="viewer-fallback">
           <div class="empty-icon">${fileIcon(entry.kind)}</div>
-          <p class="empty-title" style="color:#f4f4f5">Can't play this here</p>
-          <p class="empty-sub">${escapeHtml(entry.ext.toUpperCase())} isn't supported by browsers.</p>
+          <p class="empty-title" style="color:#f4f4f5">Browsers can't play ${escapeHtml(entry.ext.toUpperCase())}</p>
+          <p class="empty-sub">Open it in VLC or another player instead — it streams straight from the host, nothing is downloaded first.</p>
+          <div class="viewer-actions">
+            <button class="btn btn-primary" type="button" data-play="open">Open in player</button>
+            <button class="btn" type="button" data-play="copy">Copy link</button>
+            <a class="btn" href="${escapeHtml(downloadUrl)}" download>Download</a>
+          </div>
+        </div>`;
+    } else if (!entry.playable) {
+      stage.innerHTML = `
+        <div class="viewer-fallback">
+          <div class="empty-icon">${fileIcon(entry.kind)}</div>
+          <p class="empty-title" style="color:#f4f4f5">Can't open this here</p>
+          <p class="empty-sub">${escapeHtml(entry.ext.toUpperCase())} isn't something a browser can show.</p>
           <a class="btn btn-primary" href="${escapeHtml(downloadUrl)}" download>Download</a>
         </div>`;
     } else if (entry.kind === "image") {
@@ -831,7 +1008,18 @@
       // playsinline or iOS hijacks playback into its own fullscreen player.
       // preload="metadata" gets the duration for the scrubber without pulling
       // the file. Seeking then issues Range requests the server answers with 206.
-      stage.innerHTML = `<video src="${escapeHtml(streamUrl)}" controls playsinline preload="metadata" autoplay></video>`;
+      //
+      // The hand-off stays on offer even here: the container is one a browser
+      // reads, but the codecs inside may not be (HEVC, AC3), and a phone often
+      // handles a big file better in a real player.
+      stage.innerHTML = `
+        <div class="viewer-media">
+          <video src="${escapeHtml(streamUrl)}" controls playsinline preload="metadata" autoplay></video>
+          <div class="viewer-actions viewer-actions-under">
+            <button class="btn btn-sm" type="button" data-play="open">Open in player</button>
+            <button class="btn btn-sm" type="button" data-play="copy">Copy link</button>
+          </div>
+        </div>`;
     } else if (entry.kind === "audio") {
       stage.innerHTML = `<audio src="${escapeHtml(streamUrl)}" controls preload="metadata" autoplay></audio>`;
     } else {
@@ -1165,6 +1353,30 @@
       if (event.target === $("upload-sheet")) closeUploadSheet();
     });
 
+    $("play-close").addEventListener("click", closePlaySheet);
+    $("play-copy").addEventListener("click", copyPlayUrl);
+    $("play-playlist").addEventListener("click", () => {
+      // A navigation rather than fetch+blob: the response is an attachment, so
+      // the browser saves it with the right name and the right handler.
+      location.href = $("play-sheet").dataset.playlist;
+      toast("Saved — click it in your downloads to start playing", "info");
+    });
+    $("play-sheet").addEventListener("click", (event) => {
+      if (event.target === $("play-sheet")) closePlaySheet();
+    });
+
+    // Delegated, because the stage is rewritten on every file.
+    $("viewer-stage").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-play]");
+      if (!button) return;
+      const stage = $("viewer-stage");
+      const share = stage.dataset.playShare;
+      const path = stage.dataset.playPath;
+      if (!share || !path) return;
+      if (button.dataset.play === "copy") copyStreamLink(share, path);
+      else openInPlayer(share, path);
+    });
+
     $("viewer-close").addEventListener("click", closeViewer);
     $("viewer-prev").addEventListener("click", () => stepViewer(-1));
     $("viewer-next").addEventListener("click", () => stepViewer(1));
@@ -1182,6 +1394,13 @@
     });
 
     document.addEventListener("keydown", (event) => {
+      // The play sheet sits on top of the viewer, so it takes Escape first --
+      // and the arrows must not page the gallery underneath while the link is
+      // selected for copying.
+      if (!$("play-sheet").classList.contains("hidden")) {
+        if (event.key === "Escape") closePlaySheet();
+        return;
+      }
       if ($("viewer").classList.contains("hidden")) return;
       if (event.key === "Escape") closeViewer();
       else if (event.key === "ArrowLeft") stepViewer(-1);

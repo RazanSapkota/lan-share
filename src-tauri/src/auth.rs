@@ -27,7 +27,8 @@ use subtle::ConstantTimeEq;
 
 use crate::{
     models::{
-        AttemptState, ServerCtx, Session, SessionScope, COOKIE_NAME, CSRF_HEADER,
+        AttemptState, PlayToken, ServerCtx, Session, SessionScope, COOKIE_NAME, CSRF_HEADER,
+        PLAY_TOKEN_CAP, PLAY_TOKEN_TTL_MS,
     },
     utils::now_ms,
 };
@@ -184,6 +185,78 @@ pub(crate) fn sweep_sessions(
     let now = now_ms();
     let ttl_ms = ttl_hours as u64 * 3600 * 1000;
     guard.retain(|_, s| now.saturating_sub(s.created_ms) <= ttl_ms);
+}
+
+// ---------------------------------------------------------------------------
+// Play links
+// ---------------------------------------------------------------------------
+
+/// Mint a link an external player can use. See `PlayToken` for why this exists
+/// at all rather than reusing the session.
+pub(crate) fn create_play_token(
+    tokens: &Arc<Mutex<HashMap<String, PlayToken>>>,
+    share_id: &str,
+    rel: &str,
+    file_name: &str,
+) -> String {
+    let token = random_token();
+    let Ok(mut guard) = tokens.lock() else {
+        // The caller gets a token that resolves to nothing rather than a
+        // panic; the player then fails cleanly with a 404.
+        return token;
+    };
+
+    let now = now_ms();
+    guard.retain(|_, t| t.expires_ms > now);
+
+    // Full: drop the one closest to expiring. Refusing instead would make the
+    // failure land on the file the user just tapped.
+    if guard.len() >= PLAY_TOKEN_CAP {
+        if let Some(soonest) = guard
+            .iter()
+            .min_by_key(|(_, t)| t.expires_ms)
+            .map(|(k, _)| k.clone())
+        {
+            guard.remove(&soonest);
+        }
+    }
+
+    guard.insert(
+        token.clone(),
+        PlayToken {
+            share_id: share_id.to_string(),
+            rel: rel.to_string(),
+            file_name: file_name.to_string(),
+            expires_ms: now + PLAY_TOKEN_TTL_MS,
+        },
+    );
+    token
+}
+
+/// Resolve a play token, dropping it if it has expired.
+///
+/// Expiry is removed here rather than only swept on a timer, so a link cannot
+/// outlive its window just because nothing else happened on the server.
+pub(crate) fn resolve_play_token(
+    tokens: &Arc<Mutex<HashMap<String, PlayToken>>>,
+    token: &str,
+) -> Option<PlayToken> {
+    if token.is_empty() {
+        return None;
+    }
+    let mut guard = tokens.lock().ok()?;
+    let found = guard.get(token)?.clone();
+    if found.expires_ms <= now_ms() {
+        guard.remove(token);
+        return None;
+    }
+    Some(found)
+}
+
+pub(crate) fn sweep_play_tokens(tokens: &Arc<Mutex<HashMap<String, PlayToken>>>) {
+    let Ok(mut guard) = tokens.lock() else { return };
+    let now = now_ms();
+    guard.retain(|_, t| t.expires_ms > now);
 }
 
 // ---------------------------------------------------------------------------

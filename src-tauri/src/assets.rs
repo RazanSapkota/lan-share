@@ -96,8 +96,26 @@ pub(crate) const MANIFEST_JSON: &str = r##"{
   "background_color": "#0b0b0d",
   "theme_color": "#0b0b0d",
   "icons": [
-    { "src": "/assets/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+    { "src": "/assets/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
   ]
 }"##;
 
-pub(crate) const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>"##;
+/// The app mark: a folder with two arcs radiating from its top-right corner --
+/// what you share, and who can reach it.
+///
+/// The same geometry the raster icons are cut from; `tools/make-icons.mjs`
+/// draws these exact coordinates. Emerald rather than `currentColor`, because
+/// this one is used as a favicon and a manifest icon, where there is no
+/// inherited colour to take.
+pub(crate) const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path d="M3.5 7.4H8.1L9.5 10.4H12.4A1.7 1.7 0 0 1 14.1 12.1V19.9A1.7 1.7 0 0 1 12.4 21.6H3.5A1.7 1.7 0 0 1 1.8 19.9V9.1A1.7 1.7 0 0 1 3.5 7.4Z" fill="#10b981"/><path d="M18.1 10.4A4 4 0 0 0 14.1 6.4" stroke="#10b981" stroke-width="2.3" stroke-linecap="round"/><path d="M21.1 10.4A7 7 0 0 0 14.1 3.4" stroke="#10b981" stroke-width="2.3" stroke-linecap="round"/></svg>"##;
+
+/// PNG copies of the mark, for the two places an SVG will not do.
+///
+/// Chrome on Android refuses to offer "Add to Home Screen" for an SVG-only icon
+/// set, and a browser too old for SVG favicons falls back to `/favicon.ico`.
+pub(crate) const ICON_192_PNG: &[u8] = include_bytes!("../icons/icon-192.png");
+pub(crate) const ICON_512_PNG: &[u8] = include_bytes!("../icons/icon-512.png");
+/// 16 and 32 only -- a kilobyte, rather than the whole multi-size app icon.
+pub(crate) const FAVICON_ICO: &[u8] = include_bytes!("../icons/favicon.ico");

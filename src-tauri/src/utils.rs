@@ -95,6 +95,26 @@ pub(crate) fn url_encode(value: &str) -> String {
     percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
+/// Percent-encode one path segment, keeping the RFC 3986 unreserved set
+/// literal.
+///
+/// The difference from [`url_encode`] is the dot, and it is not cosmetic: a
+/// media player chooses its demuxer from the extension it can see in the URL,
+/// so `movie%2Emkv` is a file of unknown type. Same class of bug as the one
+/// [`rfc8187_encode`] exists to avoid, one layer along.
+pub(crate) fn url_encode_segment(value: &str) -> String {
+    const UNRESERVED_EXTRAS: &[u8] = b"-._~";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || UNRESERVED_EXTRAS.contains(byte) {
+            out.push(*byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// Percent-encode for the `filename*` parameter of `Content-Disposition`
 /// (RFC 8187 `ext-value`).
 ///
