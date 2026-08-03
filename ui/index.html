@@ -1,0 +1,902 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LAN Share</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..24,300..600,0..1,-25..0&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <!-- ============================ Header ============================ -->
+      <header class="app-header">
+        <div class="app-header-inner">
+          <div class="header-left">
+            <div class="brand">
+              <div class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+                  <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+                  <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+                  <line x1="12" y1="20" x2="12.01" y2="20" />
+                </svg>
+              </div>
+              <div class="brand-text">
+                <span class="brand-eyebrow">Local Network File Sharing</span>
+                <span class="brand-title">LAN Share</span>
+              </div>
+            </div>
+          </div>
+          <div class="header-right">
+            <span id="header-status" class="pill pill-off">
+              <span class="pill-dot"></span><span id="header-status-text">Stopped</span>
+            </span>
+            <button id="console-toggle" class="icon-text-button" type="button">
+              <span class="material-symbols-outlined">terminal</span>
+              <span>Console</span>
+            </button>
+            <button id="theme-toggle" class="icon-button" type="button" aria-label="Change theme">
+              <span class="material-symbols-outlined">palette</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="app-body">
+        <!-- =========================== Sidebar =========================== -->
+        <aside class="app-sidebar" id="app-sidebar">
+          <div class="sidebar-top">
+            <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Toggle sidebar">
+              <span class="material-symbols-outlined" id="sidebar-toggle-icon">menu_open</span>
+            </button>
+            <nav class="sidebar-nav">
+              <a class="sidebar-link active" href="#" data-sidebar-link="dashboard">
+                <span class="material-symbols-outlined">wifi_tethering</span>
+                <span class="sidebar-label">Dashboard</span>
+              </a>
+              <a class="sidebar-link" href="#" data-sidebar-link="shares">
+                <span class="material-symbols-outlined">folder_shared</span>
+                <span class="sidebar-label">Shares</span>
+              </a>
+              <a class="sidebar-link" href="#" data-sidebar-link="devices">
+                <span class="material-symbols-outlined">devices</span>
+                <span class="sidebar-label">Devices</span>
+                <span class="sidebar-badge hidden" id="devices-badge">0</span>
+              </a>
+              <a class="sidebar-link" href="#" data-sidebar-link="preview">
+                <span class="material-symbols-outlined">preview</span>
+                <span class="sidebar-label">Preview</span>
+              </a>
+              <a class="sidebar-link" href="#" data-sidebar-link="activity">
+                <span class="material-symbols-outlined">monitoring</span>
+                <span class="sidebar-label">Activity</span>
+              </a>
+            </nav>
+            <div class="sidebar-divider"></div>
+            <nav class="sidebar-nav">
+              <a class="sidebar-link" href="#" data-sidebar-link="settings">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="sidebar-label">Settings</span>
+              </a>
+            </nav>
+          </div>
+        </aside>
+
+        <!-- ========================== Dashboard ========================== -->
+        <section id="dashboard-view" class="app-main">
+          <p class="hero-copy">
+            Share folders with any phone or laptop on this Wi-Fi. They open a link in a browser —
+            nothing to install.
+          </p>
+
+          <div class="section-stack">
+            <!-- Power -->
+            <article class="card">
+              <div class="power-card">
+                <button id="power-toggle" class="power-toggle" type="button" aria-label="Start or stop the server" aria-pressed="false"></button>
+                <div class="power-label">
+                  <span class="power-title" id="power-title">Server stopped</span>
+                  <span class="power-sub" id="power-sub">Add a folder, then switch this on.</span>
+                </div>
+                <div class="inline-actions">
+                  <button id="open-browser-btn" class="ghost-button" type="button" disabled>
+                    <span class="material-symbols-outlined">open_in_new</span>
+                    <span>Open in browser</span>
+                  </button>
+                </div>
+              </div>
+            </article>
+
+            <!-- Bind error / firewall notice -->
+            <div id="server-error" class="notice notice-error hidden">
+              <span class="material-symbols-outlined">error</span>
+              <div class="notice-body">
+                <div class="notice-title">Couldn't start the server</div>
+                <div id="server-error-text"></div>
+              </div>
+            </div>
+
+            <!-- Connect -->
+            <article class="card" id="connect-card">
+              <header class="card-eyebrow">How people connect</header>
+              <div class="connect-grid">
+                <div class="url-block">
+                  <div class="url-row">
+                    <span class="url-text" id="lan-url">—</span>
+                    <button id="copy-url-btn" class="icon-button" type="button" aria-label="Copy address" disabled>
+                      <span class="material-symbols-outlined">content_copy</span>
+                    </button>
+                  </div>
+
+                  <div class="url-meta">
+                    <label for="iface-select" class="text-dim">Network</label>
+                    <select id="iface-select" class="iface-select"></select>
+                  </div>
+
+                  <div class="pin-block" id="pin-block">
+                    <span class="pin-block-label">PIN</span>
+                    <span class="pin-value is-masked" id="pin-value">••••••</span>
+                    <button id="pin-reveal-btn" class="icon-button" type="button" aria-label="Show PIN">
+                      <span class="material-symbols-outlined">visibility</span>
+                    </button>
+                    <button id="pin-regen-btn" class="icon-button" type="button" aria-label="Generate a new PIN">
+                      <span class="material-symbols-outlined">refresh</span>
+                    </button>
+                  </div>
+
+                  <div class="notice" id="firewall-notice">
+                    <span class="material-symbols-outlined">shield</span>
+                    <div class="notice-body">
+                      <div class="notice-title">Phones can't connect?</div>
+                      <div id="firewall-note"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="qr-block">
+                  <div class="qr-frame hidden" id="qr-frame"></div>
+                  <div class="qr-empty" id="qr-empty">
+                    <span class="material-symbols-outlined">qr_code_2</span>
+                    <span>Start the server to show a QR code</span>
+                  </div>
+                  <span class="qr-caption">Scan with a phone camera</span>
+                </div>
+              </div>
+            </article>
+
+            <!-- Live counters -->
+            <div class="stat-grid">
+              <div class="stat-card">
+                <div class="stat-icon"><span class="material-symbols-outlined">folder_shared</span></div>
+                <div class="stat-body">
+                  <div class="stat-label">Shares</div>
+                  <div class="stat-value" id="stat-shares">0</div>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon"><span class="material-symbols-outlined">swap_vert</span></div>
+                <div class="stat-body">
+                  <div class="stat-label">Data served</div>
+                  <div class="stat-value" id="stat-bytes">0.0 B</div>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon"><span class="material-symbols-outlined">devices</span></div>
+                <div class="stat-body">
+                  <div class="stat-label">Connected</div>
+                  <div class="stat-value" id="stat-sessions">0</div>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon"><span class="material-symbols-outlined">schedule</span></div>
+                <div class="stat-body">
+                  <div class="stat-label">Uptime</div>
+                  <div class="stat-value" id="stat-uptime">—</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- First run -->
+            <div id="dashboard-empty" class="notice notice-warn hidden">
+              <span class="material-symbols-outlined">info</span>
+              <div class="notice-body">
+                <div class="notice-title">Nothing is shared yet</div>
+                <div>Add a folder on the Shares page before starting the server.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- =========================== Shares ============================ -->
+        <section id="shares-view" class="app-main hidden">
+          <p class="hero-copy">
+            Every folder you add gets its own secret link, so you can hand out one folder without
+            exposing the rest.
+          </p>
+
+          <article class="card shares-table-card">
+            <div class="shares-toolbar">
+              <button id="add-folder-btn" class="primary-button" type="button">
+                <span class="material-symbols-outlined">create_new_folder</span>
+                <span>Add folder</span>
+              </button>
+              <button id="add-files-btn" class="ghost-button" type="button">
+                <span class="material-symbols-outlined">note_add</span>
+                <span>Add files</span>
+              </button>
+              <span class="count-pill" id="shares-count">0 shares</span>
+              <span class="spacer"></span>
+              <div class="input-with-icon shares-search">
+                <span class="material-symbols-outlined input-leading-icon">search</span>
+                <input id="shares-filter" type="search" placeholder="Filter shares" />
+              </div>
+            </div>
+
+            <div class="shares-table-wrap">
+              <table class="shares-table">
+                <thead>
+                  <tr>
+                    <th>On</th>
+                    <th>Name</th>
+                    <th>Location</th>
+                    <th class="sh-cell-num">Contents</th>
+                    <th>Secret link</th>
+                    <th>Status</th>
+                    <th class="sh-cell-actions">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="shares-tbody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <!-- =========================== Devices =========================== -->
+        <section id="devices-view" class="app-main hidden">
+          <p class="hero-copy">
+            Other computers running LAN Share on this network appear here. Pair once, then send
+            files straight to each other.
+          </p>
+
+          <div class="section-stack">
+            <!-- This device -->
+            <article class="card">
+              <div class="self-card">
+                <div class="self-icon"><span class="material-symbols-outlined">computer</span></div>
+                <div class="self-body">
+                  <div class="self-row">
+                    <input id="self-name" class="self-name" type="text" maxlength="48"
+                           aria-label="This device's name" />
+                    <button id="self-name-save" class="ghost-button" type="button">Rename</button>
+                  </div>
+                  <div class="self-meta">
+                    <span id="self-addr" class="mono text-dim"></span>
+                  </div>
+                </div>
+                <label class="check-row self-visible">
+                  <input type="checkbox" id="self-discoverable" />
+                  <span>Visible to other devices</span>
+                </label>
+              </div>
+              <div class="self-foot">
+                <span class="material-symbols-outlined">folder</span>
+                <span class="text-muted">Files people send me go to</span>
+                <span id="self-receive" class="mono text-dim"></span>
+                <button id="self-receive-pick" class="ghost-button" type="button">Change</button>
+              </div>
+            </article>
+
+            <!-- Discovery trouble -->
+            <div id="discovery-notice" class="notice notice-warn hidden">
+              <span class="material-symbols-outlined">wifi_off</span>
+              <div class="notice-body">
+                <div class="notice-title" id="discovery-notice-title"></div>
+                <div id="discovery-notice-body"></div>
+              </div>
+            </div>
+
+            <!-- Send to a phone -->
+            <article class="card">
+              <div class="card-head">
+                <span class="material-symbols-outlined" style="color:var(--text-dim)">smartphone</span>
+                <h3>Send to a phone</h3>
+                <span class="spacer"></span>
+                <button id="handoff-pick" class="ghost-button" type="button">
+                  <span class="material-symbols-outlined">attach_file</span>
+                  <span>Pick files</span>
+                </button>
+              </div>
+              <div class="handoff-body">
+                <p class="text-muted handoff-hint">
+                  Phones can't run this app, so they get a link instead. Pick files and scan the
+                  code — the link stops working after an hour.
+                </p>
+                <div id="handoff-list" class="handoff-list"></div>
+              </div>
+            </article>
+
+            <!-- Nearby -->
+            <article class="card">
+              <div class="card-head device-card-head">
+                <span class="radar" id="radar" aria-hidden="true"></span>
+                <h3>Nearby devices</h3>
+                <span class="count-pill" id="nearby-count">0</span>
+                <span class="spacer"></span>
+                <button id="add-ip-btn" class="ghost-button" type="button">
+                  <span class="material-symbols-outlined">add</span>
+                  <span>Add by address</span>
+                </button>
+              </div>
+              <div id="nearby-list" class="device-list" aria-live="polite" aria-relevant="additions"></div>
+            </article>
+
+            <!-- Paired -->
+            <article class="card">
+              <div class="card-head">
+                <h3>My devices</h3>
+                <span class="count-pill" id="paired-count">0</span>
+              </div>
+              <div id="paired-list" class="device-list"></div>
+            </article>
+
+            <!-- Transfers -->
+            <article class="card" id="transfers-card">
+              <div class="card-head">
+                <h3>Transfers</h3>
+                <span class="count-pill" id="transfers-count">0</span>
+                <span class="spacer"></span>
+                <button id="transfers-clear" class="ghost-button" type="button">
+                  <span class="material-symbols-outlined">clear_all</span>
+                  <span>Clear finished</span>
+                </button>
+              </div>
+              <div id="transfers-list" class="transfer-list" aria-live="polite"></div>
+            </article>
+          </div>
+        </section>
+
+        <!-- =========================== Preview =========================== -->
+        <section id="preview-view" class="app-main hidden">
+          <p class="hero-copy">
+            Exactly what people on your network see, loaded from this machine through the real
+            share link — so anything hidden here is hidden for them too.
+          </p>
+
+          <article class="card">
+            <div class="preview-bar">
+              <select id="preview-share" class="iface-select"></select>
+              <button id="preview-reload" class="ghost-button" type="button">
+                <span class="material-symbols-outlined">refresh</span>
+                <span>Reload</span>
+              </button>
+              <span class="preview-url" id="preview-url"></span>
+            </div>
+            <div class="preview-frame-wrap hidden" id="preview-frame-wrap">
+              <iframe class="preview-frame" id="preview-frame" title="Receiver preview"></iframe>
+            </div>
+            <div class="preview-placeholder" id="preview-placeholder">
+              <span class="material-symbols-outlined">preview</span>
+              <span id="preview-placeholder-text">Start the server and add a share to preview it.</span>
+            </div>
+          </article>
+        </section>
+
+        <!-- =========================== Activity ========================== -->
+        <section id="activity-view" class="app-main hidden">
+          <p class="hero-copy">
+            Live transfer log. Kept in memory only — it clears when the app closes.
+          </p>
+
+          <article class="card activity-table-card">
+            <div class="shares-toolbar">
+              <div class="mode-switch" id="activity-filter" role="tablist">
+                <button class="mode-button active" type="button" data-filter="all">All</button>
+                <button class="mode-button" type="button" data-filter="download">Transfers</button>
+                <button class="mode-button" type="button" data-filter="auth">Access</button>
+                <button class="mode-button" type="button" data-filter="denied">Denied</button>
+              </div>
+              <span class="count-pill" id="activity-count">0 events</span>
+              <span class="spacer"></span>
+              <label class="check-row">
+                <input type="checkbox" id="activity-auto" checked />
+                <span>Auto-refresh</span>
+              </label>
+              <button id="activity-clear" class="ghost-button" type="button">
+                <span class="material-symbols-outlined">delete_sweep</span>
+                <span>Clear</span>
+              </button>
+            </div>
+
+            <div class="shares-table-wrap">
+              <table class="activity-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Device</th>
+                    <th>Action</th>
+                    <th>File</th>
+                    <th class="act-bytes">Bytes</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="activity-tbody" aria-live="polite" aria-relevant="additions"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <!-- =========================== Settings ========================== -->
+        <section id="settings-view" class="app-main settings-view hidden">
+          <header class="settings-header">
+            <span class="settings-eyebrow">Configuration</span>
+            <h1 class="settings-title">Settings</h1>
+            <p class="settings-subtitle">
+              Server, access and media options. Changes save immediately; changing the port
+              restarts the server.
+            </p>
+          </header>
+
+          <div class="settings-sections">
+            <!-- Server -->
+            <section class="settings-section">
+              <div class="settings-head">
+                <span class="settings-tag">Server</span>
+                <h2 class="settings-title-sm">Network</h2>
+                <p class="settings-desc">Where the server listens for connections.</p>
+              </div>
+              <div class="settings-body">
+                <div class="path-grid">
+                  <div class="path-row">
+                    <label class="path-label" for="set-port">Port</label>
+                    <input id="set-port" type="text" inputmode="numeric" />
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-bind">Listen on</label>
+                    <select id="set-bind" class="iface-select" style="max-width:none">
+                      <option value="0.0.0.0">All networks (0.0.0.0) — recommended</option>
+                      <option value="127.0.0.1">This computer only (127.0.0.1)</option>
+                    </select>
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-name">Server name</label>
+                    <input id="set-name" type="text" />
+                  </div>
+                </div>
+                <div class="settings-toggle-stack">
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-autoport" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Try the next port if it's busy</span>
+                      <span class="settings-toggle-desc">The address and QR always show the port actually in use.</span>
+                    </span>
+                  </label>
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-autostart" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Start the server when the app opens</span>
+                      <span class="settings-toggle-desc">Leave off so the Windows firewall prompt appears when you click Start.</span>
+                    </span>
+                  </label>
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-keepawake" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Keep this computer awake while sharing</span>
+                      <span class="settings-toggle-desc">Stops a laptop suspending mid-transfer. The screen may still sleep.</span>
+                    </span>
+                  </label>
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-hostcheck" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Only accept connections made by IP address</span>
+                      <span class="settings-toggle-desc">Blocks DNS-rebinding attacks. Leave on unless something needs a hostname.</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <div class="settings-divider"></div>
+
+            <!-- Access -->
+            <section class="settings-section">
+              <div class="settings-head">
+                <span class="settings-tag">Access</span>
+                <h2 class="settings-title-sm">Who can connect</h2>
+                <p class="settings-desc">Anyone on this network can reach the address, so the PIN is what keeps it yours.</p>
+              </div>
+              <div class="settings-body">
+                <div class="settings-toggle-stack">
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-pin-enabled" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Require a PIN</span>
+                      <span class="settings-toggle-desc">Off means anyone on this Wi-Fi who finds the address sees every share.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="path-grid">
+                  <div class="path-row">
+                    <label class="path-label" for="set-pin">PIN</label>
+                    <div class="input-with-button">
+                      <input id="set-pin" type="text" inputmode="numeric" maxlength="12" />
+                      <button id="set-pin-regen" class="ghost-button" type="button">Generate</button>
+                    </div>
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-attempts">Wrong-PIN attempts before lockout</label>
+                    <input id="set-attempts" type="text" inputmode="numeric" />
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-lockout">Lockout length (seconds)</label>
+                    <input id="set-lockout" type="text" inputmode="numeric" />
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-ttl">Sign-in lasts (hours)</label>
+                    <input id="set-ttl" type="text" inputmode="numeric" />
+                  </div>
+                </div>
+
+                <div class="card-head" style="border-top:1px solid var(--line); border-bottom:0; padding-left:0; padding-right:0">
+                  <h3>Connected devices</h3>
+                  <button id="revoke-all-btn" class="ghost-button" type="button">
+                    <span class="material-symbols-outlined">logout</span>
+                    <span>Sign all out</span>
+                  </button>
+                </div>
+                <div class="section-stack" id="sessions-list"></div>
+              </div>
+            </section>
+
+            <div class="settings-divider"></div>
+
+            <!-- Uploads -->
+            <section class="settings-section">
+              <div class="settings-head">
+                <span class="settings-tag">Uploads</span>
+                <h2 class="settings-title-sm">Receiving files</h2>
+                <p class="settings-desc">Off by default. When on, one folder becomes a drop-box and nothing else is writable.</p>
+              </div>
+              <div class="settings-body">
+                <div class="settings-toggle-stack">
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-uploads" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Let people send files to me</span>
+                      <span class="settings-toggle-desc">Uploads never overwrite: a duplicate name becomes "photo (2).jpg".</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="path-grid">
+                  <div class="path-row">
+                    <label class="path-label" for="set-inbox">Drop-box folder</label>
+                    <select id="set-inbox" class="iface-select" style="max-width:none"></select>
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-maxupload">Largest upload (MB)</label>
+                    <input id="set-maxupload" type="text" inputmode="numeric" />
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="settings-divider"></div>
+
+            <!-- Media -->
+            <section class="settings-section">
+              <div class="settings-head">
+                <span class="settings-tag">Media</span>
+                <h2 class="settings-title-sm">Browsing &amp; thumbnails</h2>
+                <p class="settings-desc">How shared folders look to the people browsing them.</p>
+              </div>
+              <div class="settings-body">
+                <div class="settings-toggle-stack">
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-thumbs" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Generate image thumbnails</span>
+                      <span class="settings-toggle-desc">Cached on disk. Videos have no thumbnail — that would need a video decoder.</span>
+                    </span>
+                  </label>
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-zip" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Allow downloading a whole folder as a .zip</span>
+                      <span class="settings-toggle-desc">Streamed, so a large folder starts downloading immediately.</span>
+                    </span>
+                  </label>
+                  <label class="settings-toggle-card">
+                    <input type="checkbox" id="set-hidden" />
+                    <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Show hidden and system files</span>
+                      <span class="settings-toggle-desc">Off hides dotfiles, desktop.ini, Thumbs.db and the recycle bin.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="path-grid">
+                  <div class="path-row">
+                    <label class="path-label" for="set-thumbsize">Thumbnail size (px)</label>
+                    <input id="set-thumbsize" type="text" inputmode="numeric" />
+                  </div>
+                  <div class="path-row">
+                    <label class="path-label" for="set-view">Default view</label>
+                    <select id="set-view" class="iface-select" style="max-width:none">
+                      <option value="grid">Gallery</option>
+                      <option value="list">List</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="settings-stats-grid">
+                  <div class="settings-stat">
+                    <span class="settings-stat-label">Thumbnail cache</span>
+                    <span class="settings-stat-value" id="thumb-cache-size">—</span>
+                  </div>
+                </div>
+                <div class="inline-actions">
+                  <button id="clear-thumbs-btn" class="ghost-button" type="button">
+                    <span class="material-symbols-outlined">mop</span>
+                    <span>Clear thumbnail cache</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <div class="settings-divider"></div>
+
+            <!-- Appearance -->
+            <section class="settings-section">
+              <div class="settings-head">
+                <span class="settings-tag">Appearance</span>
+                <h2 class="settings-title-sm">Theme</h2>
+                <p class="settings-desc">Affects this window only. The browser page follows each device's own light/dark setting.</p>
+              </div>
+              <div class="settings-body">
+                <div class="theme-grid" id="theme-grid"></div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+
+      <!-- ======================== Console drawer ======================== -->
+      <aside class="console-drawer hidden" id="console-drawer">
+        <div class="console-head">
+          <span class="console-title">Console</span>
+          <div class="console-actions">
+            <button id="console-clear" class="icon-button" type="button" aria-label="Clear log">
+              <span class="material-symbols-outlined">delete</span>
+            </button>
+            <button id="console-close" class="icon-button" type="button" aria-label="Close console">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          </div>
+        </div>
+        <div class="console-body" id="console-body"></div>
+      </aside>
+    </div>
+
+    <!-- ===================== Send to phone ============================= -->
+    <div class="dialog-backdrop hidden" id="handoff-backdrop">
+      <div class="dialog-card pair-card" role="dialog" aria-modal="true" aria-labelledby="handoff-title">
+        <h3 id="handoff-title">Scan this with the phone</h3>
+        <div class="qr-frame" id="handoff-qr" style="margin:14px auto"></div>
+        <p class="mono text-dim" id="handoff-url" style="word-break:break-all;font-size:11.5px"></p>
+        <p class="text-muted" id="handoff-meta"></p>
+        <div class="dialog-actions">
+          <button id="handoff-copy" class="ghost-button" type="button">Copy link</button>
+          <button id="handoff-done" class="primary-button" type="button">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== Pairing: outgoing ========================== -->
+    <!-- No confirm button at all. This device cannot complete the pairing --
+         all the authority sits on the screen you walked over to. -->
+    <div class="dialog-backdrop hidden" id="pair-out-backdrop">
+      <div class="dialog-card pair-card" role="dialog" aria-modal="true" aria-labelledby="pair-out-title">
+        <h3 id="pair-out-title">Pairing with <span id="pair-out-name">device</span></h3>
+        <div class="pair-code-host">
+          <div class="pair-code" id="pair-out-code" role="status" aria-label="Pairing code"></div>
+        </div>
+        <div class="pair-compare">
+          <span class="material-symbols-outlined">warning</span>
+          <span>Check the other device shows these same digits. If they differ, cancel — someone
+            else is asking to connect.</span>
+        </div>
+        <p class="pair-message" id="pair-out-message">Waiting for the other device to accept…</p>
+        <div class="pair-wait progress-track"><div class="progress-bar is-indeterminate"></div></div>
+        <div class="dialog-actions">
+          <button id="pair-out-cancel" class="ghost-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== Pairing: incoming ========================== -->
+    <div class="dialog-backdrop hidden" id="pair-in-backdrop">
+      <div class="dialog-card pair-card" role="dialog" aria-modal="true" aria-labelledby="pair-in-title">
+        <h3 id="pair-in-title">A device wants to connect</h3>
+        <div class="pair-who">
+          <span class="pair-who-icon"><span class="material-symbols-outlined">computer</span></span>
+          <span class="pair-who-text">
+            <span class="pair-who-name" id="pair-in-name"></span>
+            <span class="pair-who-addr mono" id="pair-in-addr"></span>
+          </span>
+        </div>
+        <div class="pair-code-host">
+          <div class="pair-code" id="pair-in-code" role="status" aria-label="Pairing code"></div>
+        </div>
+        <div class="pair-compare">
+          <span class="material-symbols-outlined">warning</span>
+          <span>Only accept if the other device shows these same digits.</span>
+        </div>
+        <p class="pair-unverified">
+          The name above is what that device calls itself and has not been verified. The address is.
+        </p>
+        <div class="dialog-actions">
+          <button id="pair-in-reject" class="ghost-button" type="button">Reject</button>
+          <button id="pair-in-accept" class="primary-button" type="button" disabled>Accept</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== Incoming file offer ======================== -->
+    <div class="dialog-backdrop hidden" id="offer-backdrop">
+      <div class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="offer-title">
+        <h3 id="offer-title"><span id="offer-peer"></span> wants to send you files</h3>
+        <div class="offer-summary">
+          <span class="material-symbols-outlined">download</span>
+          <span id="offer-summary-text"></span>
+        </div>
+        <ul class="offer-files" id="offer-files"></ul>
+        <p class="offer-dest text-dim">They will be saved to <span id="offer-dest" class="mono"></span></p>
+        <label class="settings-toggle-card" style="margin-top:12px">
+          <input type="checkbox" id="offer-always" />
+          <span class="settings-toggle-box" aria-hidden="true">
+            <span class="material-symbols-outlined">check</span>
+          </span>
+          <span class="settings-toggle-text">
+            <span class="settings-toggle-title">Always accept from this device</span>
+            <span class="settings-toggle-desc">Future transfers land without asking.</span>
+          </span>
+        </label>
+        <div class="dialog-actions">
+          <button id="offer-decline" class="ghost-button" type="button">Decline</button>
+          <button id="offer-accept" class="primary-button" type="button">Accept</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== Add device by address ====================== -->
+    <div class="dialog-backdrop hidden" id="addip-backdrop">
+      <div class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="addip-title">
+        <h3 id="addip-title">Add a device by address</h3>
+        <p class="text-muted">
+          Use this when a device does not appear on its own — some networks block the discovery
+          message. Find the address on the other device's Dashboard.
+        </p>
+        <div class="path-grid" style="margin-top:12px">
+          <div class="path-row">
+            <label class="path-label" for="addip-input">Address</label>
+            <input id="addip-input" type="text" placeholder="192.168.1.42" />
+          </div>
+        </div>
+        <p class="pair-message" id="addip-error"></p>
+        <div class="dialog-actions">
+          <button id="addip-cancel" class="ghost-button" type="button">Cancel</button>
+          <button id="addip-ok" class="primary-button" type="button">Look for it</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== Browse a paired device ===================== -->
+    <div class="dialog-backdrop hidden" id="browse-backdrop">
+      <div class="dialog-card browse-card" role="dialog" aria-modal="true" aria-labelledby="browse-title">
+        <h3 id="browse-title">Browsing <span id="browse-peer"></span></h3>
+        <div class="browse-bar">
+          <button id="browse-up" class="ghost-button" type="button">
+            <span class="material-symbols-outlined">arrow_back</span>
+            <span>Back</span>
+          </button>
+          <span class="browse-path mono" id="browse-path"></span>
+        </div>
+        <div class="browse-list" id="browse-list"></div>
+        <div class="dialog-actions">
+          <button id="browse-close" class="ghost-button" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =========================== Share editor ========================= -->
+    <div class="dialog-backdrop hidden" id="share-edit-backdrop">
+      <div class="dialog-card" style="max-width:520px">
+        <h3 id="share-edit-title">Edit share</h3>
+        <div class="path-grid" style="margin:12px 0">
+          <div class="path-row">
+            <label class="path-label" for="share-edit-name">Display name</label>
+            <input id="share-edit-name" type="text" />
+          </div>
+          <div class="path-row">
+            <label class="path-label" for="share-edit-note">Note (optional)</label>
+            <input id="share-edit-note" type="text" />
+          </div>
+        </div>
+        <div class="settings-toggle-stack">
+          <label class="settings-toggle-card">
+            <input type="checkbox" id="share-edit-recursive" />
+            <span class="settings-toggle-box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                    <span class="settings-toggle-text">
+                      <span class="settings-toggle-title">Include subfolders</span>
+                      <span class="settings-toggle-desc">Off shares only the files sitting directly in this folder.</span>
+                    </span>
+          </label>
+        </div>
+        <div class="path-grid" style="margin-top:12px">
+          <div class="path-row">
+            <label class="path-label" for="share-edit-include">Only these file types (comma separated, blank = all)</label>
+            <input id="share-edit-include" type="text" placeholder="jpg, mp4, pdf" />
+          </div>
+          <div class="path-row">
+            <label class="path-label" for="share-edit-exclude">Never share these types</label>
+            <input id="share-edit-exclude" type="text" placeholder="exe, dll" />
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button id="share-edit-cancel" class="ghost-button" type="button">Cancel</button>
+          <button id="share-edit-save" class="primary-button" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =========================== Confirm ============================== -->
+    <div class="dialog-backdrop hidden" id="confirm-backdrop">
+      <div class="dialog-card">
+        <h3 id="confirm-title">Are you sure?</h3>
+        <p id="confirm-body"></p>
+        <div class="dialog-actions">
+          <button id="confirm-cancel" class="ghost-button" type="button">Cancel</button>
+          <button id="confirm-ok" class="primary-button" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast-host" id="toast-host"></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

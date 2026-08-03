@@ -1,0 +1,35 @@
+# Rust / Cargo
+target/
+src-tauri/target/
+**/*.rs.bk
+
+# Tauri codegen output (regenerated from tauri.conf.json on every build)
+src-tauri/gen/
+
+# Node — there are no dependencies, but npm still writes these
+node_modules/
+package-lock.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# NOTE: Cargo.lock is deliberately NOT ignored. This crate builds a binary, so
+# the lockfile belongs in version control — it is what makes a build
+# reproducible.

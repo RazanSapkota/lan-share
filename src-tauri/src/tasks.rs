@@ -1,0 +1,2059 @@
+//! Every `#[tauri::command]`, plus the background-task helpers. This is the
+//! only module `main.rs` imports commands from, mirroring the reference app.
+
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+};
+
+use anyhow::Result;
+use tauri::State;
+
+use crate::{
+    activity, auth, config, media,
+    models::{
+        ActivityEntry, AppConfig, AppState, DeviceIdentity, DiscoveredPeer, DiscoveredPeerView,
+        DiscoveryStatus, FirewallHint, HandoffView, IndexShareResponse, LanUrl, ListingResponse,
+        OfferView,
+        PairPromptView, PairResult, Peer, PeerView, PrewarmResponse, ProgressPayload, QrPayload,
+        SaveConfigResult, ServerSettings, ServerStatus, Session, SessionView, Share, ShareView,
+        TaskHandle, ThumbCacheStats, Transfer,
+    },
+    net, server, shares, utils,
+};
+
+// ---------------------------------------------------------------------------
+// Task helpers -- structurally identical to the reference app
+// ---------------------------------------------------------------------------
+
+pub(crate) fn new_progress_payload(phase: &str, message: &str) -> ProgressPayload {
+    ProgressPayload {
+        phase: phase.to_string(),
+        message: message.to_string(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn set_task_progress(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    phase: &str,
+    progress: f64,
+    message: impl Into<String>,
+) {
+    if let Ok(mut guard) = tasks.lock() {
+        if let Some(payload) = guard.get_mut(&task_id) {
+            payload.phase = phase.to_string();
+            payload.progress = progress.clamp(0.0, 1.0);
+            payload.message = message.into();
+        }
+    }
+}
+
+fn finish_index_task(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    result: Result<IndexShareResponse>,
+) {
+    if let Ok(mut guard) = tasks.lock() {
+        if let Some(payload) = guard.get_mut(&task_id) {
+            payload.done = true;
+            payload.progress = 1.0;
+            match result {
+                Ok(response) => {
+                    payload.phase = "done".to_string();
+                    payload.message = format!(
+                        "{} files, {}",
+                        response.file_count, response.total_bytes_text
+                    );
+                    payload.index_result = Some(response);
+                }
+                Err(err) => {
+                    payload.phase = "error".to_string();
+                    payload.error = Some(err.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn finish_prewarm_task(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    result: Result<PrewarmResponse>,
+) {
+    if let Ok(mut guard) = tasks.lock() {
+        if let Some(payload) = guard.get_mut(&task_id) {
+            payload.done = true;
+            payload.progress = 1.0;
+            match result {
+                Ok(response) => {
+                    payload.phase = "done".to_string();
+                    payload.message = format!(
+                        "{} generated, {} cached, {} failed",
+                        response.generated, response.reused, response.failed
+                    );
+                    payload.prewarm_result = Some(response);
+                }
+                Err(err) => {
+                    payload.phase = "error".to_string();
+                    payload.error = Some(err.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn alloc_task(state: &AppState, phase: &str, message: &str) -> Result<u64, String> {
+    let task_id = state.next_task_id.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut guard = state
+        .tasks
+        .lock()
+        .map_err(|_| "task state poisoned".to_string())?;
+    guard.insert(task_id, new_progress_payload(phase, message));
+    Ok(task_id)
+}
+
+#[tauri::command]
+pub(crate) fn get_task_progress(
+    task_id: u64,
+    state: State<'_, AppState>,
+) -> Result<ProgressPayload, String> {
+    let guard = state
+        .tasks
+        .lock()
+        .map_err(|_| "task state poisoned".to_string())?;
+    guard
+        .get(&task_id)
+        .cloned()
+        .ok_or_else(|| format!("task {task_id} not found"))
+}
+
+#[tauri::command]
+pub(crate) fn clear_task(task_id: u64, state: State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state
+        .tasks
+        .lock()
+        .map_err(|_| "task state poisoned".to_string())?;
+    guard.remove(&task_id);
+    drop(guard);
+    if let Ok(mut cancels) = state.cancellations.lock() {
+        cancels.remove(&task_id);
+    }
+    Ok(())
+}
+
+/// Flip the cancel flag for `task_id` if one was registered. Tasks that opt in
+/// poll the flag at safe points and bail out gracefully.
+#[tauri::command]
+pub(crate) fn cancel_task(task_id: u64, state: State<'_, AppState>) -> Result<bool, String> {
+    let cancels = state
+        .cancellations
+        .lock()
+        .map_err(|_| "cancellation state poisoned".to_string())?;
+    if let Some(flag) = cancels.get(&task_id) {
+        flag.store(true, Ordering::SeqCst);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn load_config(app: tauri::AppHandle) -> AppConfig {
+    config::load_config_impl(&app)
+}
+
+#[tauri::command]
+pub(crate) fn save_config(
+    app: tauri::AppHandle,
+    config: AppConfig,
+    state: State<'_, AppState>,
+) -> Result<SaveConfigResult, String> {
+    let previous = state
+        .settings
+        .read()
+        .map(|s| s.clone())
+        .unwrap_or_default();
+
+    let mut next = config;
+    config::normalize(&mut next);
+
+    config::save_config_impl(&app, &next).map_err(|e| e.to_string())?;
+    config::apply_config_to_state(&state, &next).map_err(|e| e.to_string())?;
+
+    let incoming = ServerSettings::from_config(&next);
+    let mut result = SaveConfigResult {
+        port: next.port,
+        ..Default::default()
+    };
+
+    // Only bind parameters need the listener torn down; everything else is read
+    // live off the RwLock by the handlers. Auto-restarting is the right call --
+    // a user who changed the port expects the port to change, and an "click
+    // Restart to apply" banner is just one more thing to forget.
+    if previous.needs_rebind(&incoming) && server::is_running(&state) {
+        match server::restart_server_impl(&app, &state) {
+            Ok(status) => {
+                result.rebound = true;
+                result.port = status.port;
+                if status.port != next.port {
+                    result.warning = Some(format!(
+                        "Port {} was taken; now listening on {}.",
+                        next.port, status.port
+                    ));
+                }
+            }
+            Err(err) => {
+                result.warning = Some(format!("Server could not restart: {err}"));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Load, mutate, save, and re-apply in one step, so every share/PIN command
+/// keeps the file and the live state in sync without repeating itself.
+fn mutate_config<F, T>(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    mutate: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&mut AppConfig) -> Result<T, String>,
+{
+    let mut config = config::load_config_impl(app);
+    let out = mutate(&mut config)?;
+    config::normalize(&mut config);
+    config::save_config_impl(app, &config).map_err(|e| e.to_string())?;
+    config::apply_config_to_state(state, &config).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Server lifecycle
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn start_server(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ServerStatus, String> {
+    // Generate a PIN on first start rather than at install time, so the value
+    // the Dashboard shows is always the value the server is checking.
+    let needs_pin = state
+        .settings
+        .read()
+        .map(|s| s.pin_enabled && s.pin.trim().is_empty())
+        .unwrap_or(false);
+    if needs_pin {
+        mutate_config(&app, &state, |config| {
+            config.pin = auth::random_pin();
+            Ok(())
+        })?;
+    }
+
+    server::start_server_impl(&app, &state).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn stop_server(state: State<'_, AppState>) -> Result<ServerStatus, String> {
+    server::stop_server_impl(&state).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn restart_server(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ServerStatus, String> {
+    server::restart_server_impl(&app, &state).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
+    server::status_impl(&state)
+}
+
+// ---------------------------------------------------------------------------
+// Shares
+// ---------------------------------------------------------------------------
+
+/// The address share links are built from: the primary interface, else the
+/// first non-virtual one. Same ranking the Dashboard QR uses, so the two never
+/// disagree about which address to hand out.
+fn link_host() -> Option<String> {
+    let addresses = net::lan_addresses();
+    addresses
+        .iter()
+        .find(|a| a.is_primary)
+        .or_else(|| addresses.iter().find(|a| !a.is_virtual))
+        .map(|a| a.ip.clone())
+}
+
+fn share_view(
+    share: &crate::models::ResolvedShare,
+    port: u16,
+    host: Option<&str>,
+) -> ShareView {
+    let link = host.map(|host| format!("http://{}:{}/s/{}", host, port, share.cfg.token));
+    ShareView {
+        root_exists: share.root_exists,
+        display_path: shares::display_path(&share.root),
+        link,
+        cfg: share.cfg.clone(),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn list_shares(state: State<'_, AppState>) -> Result<Vec<ShareView>, String> {
+    let status = server::status_impl(&state);
+    // Enumerated once per call, not once per share: each lookup walks every
+    // network adapter on the machine.
+    let host = if status.running { link_host() } else { None };
+    let registry = state
+        .shares
+        .read()
+        .map_err(|_| "share state poisoned".to_string())?;
+    Ok(registry
+        .shares
+        .iter()
+        .map(|s| share_view(s, status.port, host.as_deref()))
+        .collect())
+}
+
+#[tauri::command]
+pub(crate) fn add_share(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> Result<ShareView, String> {
+    let added = add_shares(app, state, vec![path])?;
+    let mut view = added
+        .into_iter()
+        .next()
+        .ok_or_else(|| "failed to add share".to_string())?;
+    if let Some(name) = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+        view.cfg.name = name;
+    }
+    Ok(view)
+}
+
+#[tauri::command]
+pub(crate) fn add_shares(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<ShareView>, String> {
+    let ids = mutate_config(&app, &state, |config| {
+        let mut ids = Vec::new();
+        for raw in paths {
+            let path = raw.trim().to_string();
+            if path.is_empty() {
+                continue;
+            }
+            // Canonicalize before the duplicate check, so "D:\Media" and
+            // "D:\media\..\Media" are recognised as the same folder.
+            let canonical = shares::canonical_root(&path).map_err(|e| e.to_string())?;
+            let is_file = canonical.is_file();
+
+            let already = config.shares.iter().any(|existing| {
+                shares::canonical_root(&existing.path)
+                    .map(|r| r == canonical)
+                    .unwrap_or(false)
+            });
+            if already {
+                return Err(format!("{} is already shared", shares::display_path(&canonical)));
+            }
+
+            let name = canonical
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+
+            let id = auth::random_id();
+            ids.push(id.clone());
+            config.shares.push(Share {
+                id,
+                name,
+                // Store the ORIGINAL path, not the verbatim canonical form:
+                // the config is user-readable, and "\\?\D:\Media" is not.
+                path: shares::display_path(&canonical),
+                token: auth::random_token(),
+                enabled: true,
+                is_inbox: false,
+                read_only: true,
+                is_file,
+                recursive: true,
+                include_names: Vec::new(),
+                include_ext: Vec::new(),
+                exclude_ext: Vec::new(),
+                added_ms: utils::now_ms(),
+                note: None,
+            });
+        }
+        Ok(ids)
+    })?;
+
+    let status = server::status_impl(&state);
+    // Enumerated once per call, not once per share: each lookup walks every
+    // network adapter on the machine.
+    let host = if status.running { link_host() } else { None };
+    let registry = state
+        .shares
+        .read()
+        .map_err(|_| "share state poisoned".to_string())?;
+    Ok(ids
+        .iter()
+        .filter_map(|id| registry.by_id(id))
+        .map(|s| share_view(s, status.port, host.as_deref()))
+        .collect())
+}
+
+#[tauri::command]
+pub(crate) fn remove_share(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    share_id: String,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        let before = config.shares.len();
+        config.shares.retain(|s| s.id != share_id);
+        if config.shares.len() == before {
+            return Err(format!("share {share_id} not found"));
+        }
+        if config.inbox_share_id.as_deref() == Some(share_id.as_str()) {
+            config.inbox_share_id = None;
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn update_share(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    share: Share,
+) -> Result<ShareView, String> {
+    let id = share.id.clone();
+    mutate_config(&app, &state, |config| {
+        let existing = config
+            .shares
+            .iter_mut()
+            .find(|s| s.id == share.id)
+            .ok_or_else(|| format!("share {} not found", share.id))?;
+        // The id and token are not editable through this path: the id appears
+        // in handed-out URLs, and the token has its own regenerate command so
+        // rotating a secret is always a deliberate act.
+        let token = existing.token.clone();
+        *existing = Share { token, ..share };
+        Ok(())
+    })?;
+
+    let status = server::status_impl(&state);
+    // Enumerated once per call, not once per share: each lookup walks every
+    // network adapter on the machine.
+    let host = if status.running { link_host() } else { None };
+    let registry = state
+        .shares
+        .read()
+        .map_err(|_| "share state poisoned".to_string())?;
+    registry
+        .by_id(&id)
+        .map(|s| share_view(s, status.port, host.as_deref()))
+        .ok_or_else(|| format!("share {id} not found"))
+}
+
+#[tauri::command]
+pub(crate) fn set_share_enabled(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    share_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        let share = config
+            .shares
+            .iter_mut()
+            .find(|s| s.id == share_id)
+            .ok_or_else(|| format!("share {share_id} not found"))?;
+        share.enabled = enabled;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn regenerate_share_token(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    share_id: String,
+) -> Result<String, String> {
+    // `apply_config_to_state` prunes sessions whose stored token no longer
+    // matches, so the old link stops working immediately -- for anyone already
+    // browsing through it, not just for new visitors.
+    mutate_config(&app, &state, |config| {
+        let share = config
+            .shares
+            .iter_mut()
+            .find(|s| s.id == share_id)
+            .ok_or_else(|| format!("share {share_id} not found"))?;
+        share.token = auth::random_token();
+        Ok(share.token.clone())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn set_inbox_share(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    share_id: Option<String>,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        if let Some(id) = &share_id {
+            let share = config
+                .shares
+                .iter_mut()
+                .find(|s| &s.id == id)
+                .ok_or_else(|| format!("share {id} not found"))?;
+            if share.is_file {
+                return Err("a single-file share cannot be an inbox".to_string());
+            }
+        }
+        config.inbox_share_id = share_id;
+        // `normalize` applies the at-most-one-inbox rule and clears read_only
+        // on the winner.
+        Ok(())
+    })
+}
+
+/// Browse a share from the DESKTOP through the exact same `resolve_within` the
+/// server uses, so the containment layer is exercisable without a browser.
+#[tauri::command]
+pub(crate) fn preview_share(
+    state: State<'_, AppState>,
+    share_id: String,
+    rel_path: String,
+) -> Result<ListingResponse, String> {
+    let settings = state
+        .settings
+        .read()
+        .map(|s| s.clone())
+        .unwrap_or_default();
+    let registry = state
+        .shares
+        .read()
+        .map_err(|_| "share state poisoned".to_string())?;
+    let share = registry
+        .by_id(&share_id)
+        .ok_or_else(|| format!("share {share_id} not found"))?;
+    shares::list_directory(share, &rel_path, &settings, None, None)
+        .map_err(|reject| reject.message())
+}
+
+// ---------------------------------------------------------------------------
+// PIN
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn get_pin(app: tauri::AppHandle) -> String {
+    config::load_config_impl(&app).pin
+}
+
+#[tauri::command]
+pub(crate) fn set_pin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    pin: String,
+) -> Result<(), String> {
+    let trimmed = pin.trim().to_string();
+    if !trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Err("PIN must contain digits only".to_string());
+    }
+    if trimmed.len() < 4 || trimmed.len() > 12 {
+        return Err("PIN must be 4 to 12 digits".to_string());
+    }
+    mutate_config(&app, &state, |config| {
+        config.pin = trimmed;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn generate_pin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    mutate_config(&app, &state, |config| {
+        config.pin = auth::random_pin();
+        Ok(config.pin.clone())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn set_pin_enabled(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        config.pin_enabled = enabled;
+        if enabled && config.pin.trim().is_empty() {
+            config.pin = auth::random_pin();
+        }
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Network
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn get_lan_urls(state: State<'_, AppState>) -> Vec<LanUrl> {
+    let status = server::status_impl(&state);
+    net::lan_urls(status.port, None)
+}
+
+#[tauri::command]
+pub(crate) fn get_share_qr(
+    state: State<'_, AppState>,
+    share_id: Option<String>,
+    ip: Option<String>,
+    size: u32,
+) -> Result<QrPayload, String> {
+    let status = server::status_impl(&state);
+
+    let host = match ip.filter(|s| !s.trim().is_empty()) {
+        Some(ip) => ip,
+        None => net::lan_addresses()
+            .into_iter()
+            .next()
+            .map(|a| a.ip)
+            // Offline (no adapter at all) still needs a QR that renders rather
+            // than an error the Dashboard has to special-case.
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
+    };
+
+    let path = match share_id {
+        Some(id) => {
+            let registry = state
+                .shares
+                .read()
+                .map_err(|_| "share state poisoned".to_string())?;
+            let share = registry
+                .by_id(&id)
+                .ok_or_else(|| format!("share {id} not found"))?;
+            format!("/s/{}", share.cfg.token)
+        }
+        None => String::new(),
+    };
+
+    let url = format!("http://{}:{}{}", host, status.port, path);
+    let svg = net::qr_svg(&url, size.clamp(96, 1024)).map_err(|e| e.to_string())?;
+    Ok(QrPayload { url, svg })
+}
+
+#[tauri::command]
+pub(crate) fn get_qr_for_url(url: String, size: u32) -> Result<String, String> {
+    net::qr_svg(&url, size.clamp(96, 1024)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_firewall_hint(state: State<'_, AppState>) -> FirewallHint {
+    let status = server::status_impl(&state);
+    FirewallHint {
+        platform: std::env::consts::OS.to_string(),
+        command: net::firewall_command(status.port),
+        note: net::firewall_note(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Activity / sessions
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn get_activity_log(
+    state: State<'_, AppState>,
+    since_id: u64,
+    limit: usize,
+) -> Result<Vec<ActivityEntry>, String> {
+    let guard = state
+        .activity
+        .lock()
+        .map_err(|_| "activity state poisoned".to_string())?;
+    Ok(activity::read_since(&guard, since_id, limit))
+}
+
+#[tauri::command]
+pub(crate) fn clear_activity_log(state: State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state
+        .activity
+        .lock()
+        .map_err(|_| "activity state poisoned".to_string())?;
+    guard.clear();
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionView>, String> {
+    let guard = state
+        .sessions
+        .lock()
+        .map_err(|_| "session state poisoned".to_string())?;
+    let mut out: Vec<SessionView> = guard
+        .iter()
+        .map(|(token, session)| session_view(token, session))
+        .collect();
+    out.sort_by(|a, b| b.last_seen_ms.cmp(&a.last_seen_ms));
+    Ok(out)
+}
+
+fn session_view(token: &str, session: &Session) -> SessionView {
+    SessionView {
+        // Truncated: the desktop needs to identify a session to revoke it, not
+        // to be able to replay it if this list ever leaks into a log.
+        token: token.chars().take(8).collect(),
+        scope: session.scope_name().to_string(),
+        share_id: session.share_id().map(|s| s.to_string()),
+        client_ip: session.client_ip.clone(),
+        user_agent: session.user_agent.clone(),
+        created_ms: session.created_ms,
+        last_seen_ms: session.last_seen_ms,
+    }
+}
+
+#[tauri::command]
+pub(crate) fn revoke_session(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<bool, String> {
+    let mut guard = state
+        .sessions
+        .lock()
+        .map_err(|_| "session state poisoned".to_string())?;
+    // The UI only holds the truncated prefix, so match on that.
+    let full = guard
+        .keys()
+        .find(|k| k.starts_with(&token))
+        .cloned();
+    Ok(match full {
+        Some(key) => guard.remove(&key).is_some(),
+        None => false,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn revoke_all_sessions(state: State<'_, AppState>) -> Result<usize, String> {
+    let mut guard = state
+        .sessions
+        .lock()
+        .map_err(|_| "session state poisoned".to_string())?;
+    let count = guard.len();
+    guard.clear();
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnails
+// ---------------------------------------------------------------------------
+
+fn resolved_thumb_dir(app: &tauri::AppHandle, state: &AppState) -> Result<PathBuf, String> {
+    if let Ok(guard) = state.thumb_dir.lock() {
+        if let Some(dir) = guard.as_ref() {
+            return Ok(dir.clone());
+        }
+    }
+    media::thumb_dir(app).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_thumb_cache_stats(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ThumbCacheStats, String> {
+    let dir = resolved_thumb_dir(&app, &state)?;
+    let (file_count, total_bytes) = media::cache_stats(&dir);
+    Ok(ThumbCacheStats {
+        file_count,
+        total_bytes,
+        total_bytes_text: utils::format_bytes(total_bytes),
+        path: shares::display_path(&dir),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn clear_thumb_cache(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    let dir = resolved_thumb_dir(&app, &state)?;
+    media::clear_cache(&dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn start_prewarm_thumbs_task(
+    app: tauri::AppHandle,
+    share_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskHandle, String> {
+    let task_id = alloc_task(&state, "prewarm_starting", "Preparing thumbnails")?;
+
+    let dir = resolved_thumb_dir(&app, &state)?;
+    let (edge, quality, cache_cap) = {
+        let s = state
+            .settings
+            .read()
+            .map_err(|_| "settings poisoned".to_string())?;
+        (s.thumb_max_edge, s.thumb_quality, 0u64)
+    };
+    let cache_cap = if cache_cap == 0 {
+        config::load_config_impl(&app).thumb_cache_max_mb * 1024 * 1024
+    } else {
+        cache_cap
+    };
+
+    let share = {
+        let registry = state
+            .shares
+            .read()
+            .map_err(|_| "share state poisoned".to_string())?;
+        registry
+            .by_id(&share_id)
+            .cloned()
+            .ok_or_else(|| format!("share {share_id} not found"))?
+    };
+
+    let tasks = Arc::clone(&state.tasks);
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Ok(mut cancels) = state.cancellations.lock() {
+        cancels.insert(task_id, Arc::clone(&cancel));
+    }
+
+    thread::spawn(move || {
+        let result = (|| -> Result<PrewarmResponse> {
+            set_task_progress(&tasks, task_id, "prewarm_scanning", 0.0, "Scanning for images");
+
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            let mut walker = walkdir::WalkDir::new(&share.root).follow_links(false);
+            if !share.cfg.recursive {
+                walker = walker.max_depth(1);
+            }
+            for entry in walker.into_iter().flatten() {
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = entry.path();
+                if media::can_thumbnail(&utils::ext_of(&path.to_string_lossy())) {
+                    candidates.push(path.to_path_buf());
+                }
+            }
+
+            let total = candidates.len().max(1);
+            let mut response = PrewarmResponse {
+                share_id: share.cfg.id.clone(),
+                ..Default::default()
+            };
+
+            for (index, path) in candidates.iter().enumerate() {
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                // A cache hit is a plain file read, so "reused" is measured by
+                // whether the cache entry already existed before we asked.
+                let existed = std::fs::metadata(path)
+                    .ok()
+                    .and_then(|m| {
+                        let mtime = m.modified().ok().map(utils::system_time_ms)?;
+                        Some(media::cache_path(
+                            &dir,
+                            &media::cache_key(path, mtime, m.len(), edge, quality),
+                        ))
+                    })
+                    .map(|p| p.exists())
+                    .unwrap_or(false);
+
+                match media::thumbnail(path, &dir, edge, quality) {
+                    Ok(_) if existed => response.reused += 1,
+                    Ok(_) => response.generated += 1,
+                    Err(_) => response.failed += 1,
+                }
+
+                if index % 8 == 0 {
+                    set_task_progress(
+                        &tasks,
+                        task_id,
+                        "prewarm_running",
+                        index as f64 / total as f64,
+                        format!("{} / {} images", index + 1, candidates.len()),
+                    );
+                }
+            }
+
+            // Trimming after the run rather than per request: walking the cache
+            // costs a stat per file, which is not a price to pay on a fetch.
+            let _ = media::evict_to(&dir, cache_cap);
+            Ok(response)
+        })();
+
+        finish_prewarm_task(&tasks, task_id, result);
+    });
+
+    Ok(TaskHandle { id: task_id })
+}
+
+// ---------------------------------------------------------------------------
+// Indexing
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn start_index_share_task(
+    share_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskHandle, String> {
+    let task_id = alloc_task(&state, "index_starting", "Counting files")?;
+
+    let share = {
+        let registry = state
+            .shares
+            .read()
+            .map_err(|_| "share state poisoned".to_string())?;
+        registry
+            .by_id(&share_id)
+            .cloned()
+            .ok_or_else(|| format!("share {share_id} not found"))?
+    };
+
+    let tasks = Arc::clone(&state.tasks);
+
+    thread::spawn(move || {
+        let result = (|| -> Result<IndexShareResponse> {
+            let (files, dirs, bytes, skipped) = shares::index_share(&share, |files, bytes| {
+                set_task_progress(
+                    &tasks,
+                    task_id,
+                    "index_running",
+                    // A directory walk has no knowable total, so the bar stays
+                    // indeterminate and the message carries the real signal.
+                    0.0,
+                    format!("{} files, {}", files, utils::format_bytes(bytes)),
+                );
+            });
+            Ok(IndexShareResponse {
+                share_id: share.cfg.id.clone(),
+                file_count: files,
+                dir_count: dirs,
+                total_bytes: bytes,
+                total_bytes_text: utils::format_bytes(bytes),
+                skipped,
+            })
+        })();
+
+        finish_index_task(&tasks, task_id, result);
+    });
+
+    Ok(TaskHandle { id: task_id })
+}
+
+// ---------------------------------------------------------------------------
+// Dialogs / OS
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn pick_folder() -> Option<String> {
+    rfd::FileDialog::new()
+        .pick_folder()
+        .map(|path| path.display().to_string())
+}
+
+#[tauri::command]
+pub(crate) fn pick_files() -> Option<Vec<String>> {
+    rfd::FileDialog::new()
+        .pick_files()
+        .map(|paths| paths.into_iter().map(|p| p.display().to_string()).collect())
+}
+
+#[tauri::command]
+pub(crate) fn path_exists(path: String) -> bool {
+    !path.trim().is_empty() && std::path::Path::new(path.trim()).exists()
+}
+
+#[tauri::command]
+pub(crate) fn show_in_explorer(path: String) -> Result<(), String> {
+    let raw = path.trim();
+    if raw.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    // Explorer does not understand the verbatim \\?\ prefix.
+    let target = dunce::simplified(std::path::Path::new(raw)).to_path_buf();
+    if !target.exists() {
+        return Err(format!("path does not exist: {}", target.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // `.arg()` quotes in a way that makes Explorer silently drop /select,
+        // so the argument string is built by hand. And Explorer returns exit
+        // code 1 on SUCCESS, so its status is deliberately not checked.
+        let mut command = std::process::Command::new("explorer");
+        command.raw_arg(format!("/select,\"{}\"", target.display()));
+        command
+            .spawn()
+            .map_err(|e| format!("failed to open Explorer: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("failed to open Finder: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let dir = if target.is_dir() {
+            target.clone()
+        } else {
+            target.parent().map(|p| p.to_path_buf()).unwrap_or(target)
+        };
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("failed to open file manager: {e}"))?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub(crate) fn open_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    // Only http(s). Without this, a crafted share name reaching this command
+    // could launch `file:///` or a custom protocol handler.
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("only http and https URLs can be opened".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        let mut command = std::process::Command::new("cmd");
+        command.raw_arg(format!("/C start \"\" \"{url}\""));
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        command
+            .spawn()
+            .map_err(|e| format!("failed to open browser: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("failed to open browser: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("failed to open browser: {e}"))?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub(crate) fn format_bytes_command(size: u64) -> String {
+    utils::format_bytes(size)
+}
+
+// ---------------------------------------------------------------------------
+// Peers: this device
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn get_device_identity(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> DeviceIdentity {
+    let config = config::load_config_impl(&app);
+    let receive_dir = state
+        .receive_dir
+        .lock()
+        .ok()
+        .and_then(|d| d.clone())
+        .map(|d| shares::display_path(&d))
+        .or_else(|| config.receive_dir.clone())
+        .unwrap_or_default();
+
+    DeviceIdentity {
+        device_id: config.device_id,
+        name: config.device_name,
+        platform: crate::models::platform_name(),
+        addresses: net::lan_addresses().into_iter().map(|a| a.ip).collect(),
+        discoverable: config.discoverable,
+        receive_dir,
+        peering_enabled: config.peering_enabled,
+    }
+}
+
+#[tauri::command]
+pub(crate) fn set_device_name(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<String, String> {
+    mutate_config(&app, &state, |config| {
+        let cleaned = config::clean_device_name(&name);
+        if cleaned.is_empty() {
+            return Err("the device name cannot be empty".to_string());
+        }
+        config.device_name = cleaned.clone();
+        Ok(cleaned)
+    })
+}
+
+#[tauri::command]
+pub(crate) fn set_discoverable(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    // Turning discovery OFF takes effect on the announce loop's next tick,
+    // because it reads the flag live. Turning it back ON needs a restart: the
+    // UDP socket is bound alongside the TCP listener, and there is none to
+    // announce from. Report which happened rather than silently doing nothing.
+    let was_running = server::is_running(&state);
+    let had_socket = state
+        .settings
+        .read()
+        .map(|s| s.discoverable && s.peering_enabled)
+        .unwrap_or(false);
+
+    mutate_config(&app, &state, |config| {
+        config.discoverable = enabled;
+        Ok(())
+    })?;
+
+    if enabled && was_running && !had_socket {
+        server::restart_server_impl(&app, &state).map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[tauri::command]
+pub(crate) fn pick_receive_folder(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let Some(path) = rfd::FileDialog::new().pick_folder() else {
+        return Ok(None);
+    };
+    let display = path.display().to_string();
+    mutate_config(&app, &state, |config| {
+        config.receive_dir = Some(display.clone());
+        Ok(())
+    })?;
+    // Re-resolve at once, so a running server writes to the new folder rather
+    // than the one it happened to start with.
+    let resolved = crate::peers::resolve_receive_dir(&app, &state).map_err(|e| e.to_string())?;
+    Ok(Some(shares::display_path(&resolved)))
+}
+
+// ---------------------------------------------------------------------------
+// Peers: discovery
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn list_discovered(state: State<'_, AppState>) -> DiscoveryStatus {
+    let now = utils::now_ms();
+    let running = server::is_running(&state);
+    let (port, discoverable) = state
+        .settings
+        .read()
+        .map(|s| (s.discovery_port, s.discoverable && s.peering_enabled))
+        .unwrap_or((0, false));
+
+    let paired: std::collections::HashSet<String> = state
+        .peers
+        .read()
+        .map(|r| r.peers.iter().map(|p| p.device_id.clone()).collect())
+        .unwrap_or_default();
+
+    let mut devices: Vec<DiscoveredPeerView> = state
+        .discovered
+        .lock()
+        .map(|table| {
+            table
+                .values()
+                .map(|peer| DiscoveredPeerView {
+                    online: peer.online(now),
+                    paired: paired.contains(&peer.device_id),
+                    peer: peer.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Online first, then most recently heard: the device someone is looking for
+    // is almost always the one that just appeared.
+    devices.sort_by(|a, b| {
+        b.online
+            .cmp(&a.online)
+            .then(b.peer.last_seen_ms.cmp(&a.peer.last_seen_ms))
+    });
+
+    let error = state.discovery_error.lock().ok().and_then(|e| e.clone());
+    let health = if !running || !discoverable {
+        "ok".to_string()
+    } else if error.is_some() {
+        "error".to_string()
+    } else {
+        discovery_health_of(&state)
+    };
+
+    DiscoveryStatus {
+        running: running && discoverable && error.is_none(),
+        port,
+        health,
+        error,
+        devices,
+    }
+}
+
+fn discovery_health_of(state: &AppState) -> String {
+    crate::discovery::health_from(
+        state.discovery_started_ms.load(Ordering::Relaxed),
+        state.discovery_self_seen_ms.load(Ordering::Relaxed),
+        state.discovered.lock().map(|t| t.is_empty()).unwrap_or(true),
+    )
+    .to_string()
+}
+
+/// Reach a device by address and add it to the discovered list.
+///
+/// The fallback for networks where broadcast and multicast are both filtered.
+/// On a router with client isolation this fails too -- honestly, and with a
+/// message, which beats a device list that stays mysteriously empty.
+#[tauri::command]
+pub(crate) async fn add_peer_by_address(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    address: String,
+) -> Result<DiscoveredPeer, String> {
+    let default_port = state
+        .settings
+        .read()
+        .map(|s| s.port)
+        .unwrap_or(crate::models::DEFAULT_PORT);
+    let (ip, port) =
+        crate::discovery::parse_manual_address(&address, default_port).map_err(|e| e.to_string())?;
+
+    let target = format!("{ip}:{port}");
+    let hello = crate::peerclient::hello(&target)
+        .await
+        .map_err(|e| format!("could not reach {target}: {e}"))?;
+
+    if hello.device_id == config::load_config_impl(&app).device_id {
+        return Err("that address is this device".to_string());
+    }
+
+    // Prefer the port the device reports over the one that was typed: someone
+    // entering a bare IP gets the right port even when it is not the default.
+    let port = if hello.port != 0 { hello.port } else { port };
+
+    let peer = DiscoveredPeer {
+        device_id: hello.device_id.clone(),
+        name: crate::config::clean_device_name(&hello.name),
+        platform: hello.platform,
+        addresses: vec![ip.to_string()],
+        port,
+        last_seen_ms: utils::now_ms(),
+        // Never evicted by the stale sweep: the user typed this in, so
+        // forgetting it would be data loss rather than tidying.
+        manual: true,
+    };
+
+    if let Ok(mut table) = state.discovered.lock() {
+        // Merge rather than duplicate -- the typed address may be a second
+        // interface of a device we already hear from.
+        match table.get_mut(&hello.device_id) {
+            Some(existing) => {
+                existing.manual = true;
+                existing.port = port;
+                existing.last_seen_ms = peer.last_seen_ms;
+                let addr = ip.to_string();
+                existing.addresses.retain(|a| a != &addr);
+                existing.addresses.insert(0, addr);
+            }
+            None => {
+                table.insert(hello.device_id.clone(), peer.clone());
+            }
+        }
+    }
+    Ok(peer)
+}
+
+// ---------------------------------------------------------------------------
+// Peers: pairing
+// ---------------------------------------------------------------------------
+
+/// Start pairing with a discovered device.
+///
+/// Long-running by nature -- it waits for a human on the far side -- so it
+/// follows the existing `start_*_task` shape: the UI polls `get_task_progress`
+/// and reads `pair_result` for the code and then the outcome.
+#[tauri::command]
+pub(crate) fn start_pair_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<TaskHandle, String> {
+    let target = {
+        let table = state
+            .discovered
+            .lock()
+            .map_err(|_| "discovery state poisoned".to_string())?;
+        let peer = table
+            .get(&device_id)
+            .ok_or_else(|| "that device is no longer visible".to_string())?;
+        let address = peer
+            .best_address()
+            .ok_or_else(|| "that device has no known address".to_string())?;
+        format!("{}:{}", address, peer.port)
+    };
+
+    let task_id = alloc_task(&state, "pair_starting", "Contacting the device")?;
+
+    let (my_id, my_name, my_port) = {
+        let config = config::load_config_impl(&app);
+        (config.device_id, config.device_name, config.port)
+    };
+
+    let tasks = Arc::clone(&state.tasks);
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Ok(mut cancels) = state.cancellations.lock() {
+        cancels.insert(task_id, Arc::clone(&cancel));
+    }
+    let app_handle = app.clone();
+
+    thread::spawn(move || {
+        // A private current-thread runtime: this is not the server's thread,
+        // and pairing is the only async work it will ever do.
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(err) => {
+                finish_pair_task(&tasks, task_id, Err(err.to_string()));
+                return;
+            }
+        };
+
+        let outcome = runtime.block_on(async {
+            let handshake = crate::peerclient::begin_pairing(&target, &my_id, &my_name, my_port)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // Publish the code the instant it exists, so the user can start
+            // walking to the other device while we wait.
+            set_pair_code(&tasks, task_id, &handshake.code, &handshake.remote_name);
+
+            let peer = crate::peerclient::await_pairing(&handshake, &cancel)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>((handshake.code.clone(), peer))
+        });
+
+        match outcome {
+            Ok((code, peer)) => match store_peer(&app_handle, &peer) {
+                Ok(()) => finish_pair_task(
+                    &tasks,
+                    task_id,
+                    Ok(PairResult {
+                        status: "accepted".to_string(),
+                        code,
+                        peer_id: peer.device_id.clone(),
+                        peer_name: peer.name.clone(),
+                        message: format!("Paired with {}", peer.name),
+                    }),
+                ),
+                Err(err) => finish_pair_task(&tasks, task_id, Err(err)),
+            },
+            Err(text) => {
+                // Map the failure onto a status the UI can phrase properly --
+                // "declined" and "timed out" deserve different copy from a
+                // genuine error.
+                let status = if text.contains("declined") {
+                    "declined"
+                } else if text.contains("cancelled") {
+                    "cancelled"
+                } else if text.contains("in time") {
+                    "expired"
+                } else {
+                    "error"
+                };
+                finish_pair_task(
+                    &tasks,
+                    task_id,
+                    Ok(PairResult {
+                        status: status.to_string(),
+                        message: text,
+                        ..Default::default()
+                    }),
+                );
+            }
+        }
+    });
+
+    Ok(TaskHandle { id: task_id })
+}
+
+/// Publish the pairing code onto the live task payload.
+fn set_pair_code(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    code: &str,
+    peer_name: &str,
+) {
+    if let Ok(mut guard) = tasks.lock() {
+        if let Some(payload) = guard.get_mut(&task_id) {
+            payload.phase = "pair_waiting".to_string();
+            payload.message = format!("Waiting for {peer_name} to accept");
+            payload.pair_result = Some(PairResult {
+                status: "pending".to_string(),
+                code: code.to_string(),
+                peer_name: peer_name.to_string(),
+                ..Default::default()
+            });
+        }
+    }
+}
+
+fn finish_pair_task(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    result: Result<PairResult, String>,
+) {
+    if let Ok(mut guard) = tasks.lock() {
+        if let Some(payload) = guard.get_mut(&task_id) {
+            payload.done = true;
+            payload.progress = 1.0;
+            match result {
+                Ok(res) => {
+                    payload.phase = res.status.clone();
+                    payload.message = res.message.clone();
+                    payload.pair_result = Some(res);
+                }
+                Err(err) => {
+                    payload.phase = "error".to_string();
+                    payload.error = Some(err);
+                }
+            }
+        }
+    }
+}
+
+/// Add or replace a peer in the config. Both sides of a pairing land here.
+pub(crate) fn store_peer(app: &tauri::AppHandle, peer: &Peer) -> Result<(), String> {
+    let mut config = config::load_config_impl(app);
+    config.peers.retain(|p| p.device_id != peer.device_id);
+    config.peers.push(peer.clone());
+    config::normalize(&mut config);
+    config::save_config_impl(app, &config).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn list_incoming_pair_requests(state: State<'_, AppState>) -> Vec<PairPromptView> {
+    crate::peers::list_prompts(&state)
+}
+
+#[tauri::command]
+pub(crate) fn accept_pair_request(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    pair_id: String,
+) -> Result<String, String> {
+    let peer = crate::peers::accept_prompt(&state, &pair_id).map_err(|e| e.to_string())?;
+    let name = peer.name.clone();
+    mutate_config(&app, &state, |config| {
+        config.peers.retain(|p| p.device_id != peer.device_id);
+        config.peers.push(peer.clone());
+        Ok(())
+    })?;
+    Ok(name)
+}
+
+#[tauri::command]
+pub(crate) fn decline_pair_request(
+    state: State<'_, AppState>,
+    pair_id: String,
+) -> Result<(), String> {
+    crate::peers::decline_prompt(&state, &pair_id).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Peers: the friends list
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn list_peers(state: State<'_, AppState>) -> Vec<PeerView> {
+    let now = utils::now_ms();
+    let discovered = state.discovered.lock().ok();
+
+    state
+        .peers
+        .read()
+        .map(|registry| {
+            registry
+                .peers
+                .iter()
+                .map(|p| {
+                    // Presence comes from the beacon table when we have it, and
+                    // falls back to the last time they talked to us -- so a
+                    // device on a broadcast-blocked network still shows online
+                    // after a successful transfer.
+                    let found = discovered.as_ref().and_then(|t| t.get(&p.device_id));
+                    let seen = found
+                        .map(|d| d.last_seen_ms.max(p.last_seen_ms))
+                        .unwrap_or(p.last_seen_ms);
+                    let address = found
+                        .and_then(|d| d.best_address().map(|a| format!("{}:{}", a, d.port)))
+                        .or_else(|| p.last_address.clone());
+                    PeerView {
+                        device_id: p.device_id.clone(),
+                        name: p.name.clone(),
+                        platform: p.platform.clone(),
+                        address,
+                        last_seen_ms: seen,
+                        online: now.saturating_sub(seen) <= crate::models::PEER_OFFLINE_AFTER_MS,
+                        auto_accept: p.auto_accept,
+                        blocked: p.blocked,
+                        added_ms: p.added_ms,
+                        note: p.note.clone(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub(crate) fn unpair_peer(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        let before = config.peers.len();
+        config.peers.retain(|p| p.device_id != device_id);
+        if config.peers.len() == before {
+            return Err("that device is not paired".to_string());
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn rename_peer(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+    name: String,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        let peer = config
+            .peers
+            .iter_mut()
+            .find(|p| p.device_id == device_id)
+            .ok_or_else(|| "that device is not paired".to_string())?;
+        let cleaned = config::clean_device_name(&name);
+        peer.name = if cleaned.is_empty() {
+            device_id.clone()
+        } else {
+            cleaned
+        };
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn set_peer_blocked(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+    blocked: bool,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        let peer = config
+            .peers
+            .iter_mut()
+            .find(|p| p.device_id == device_id)
+            .ok_or_else(|| "that device is not paired".to_string())?;
+        peer.blocked = blocked;
+        if blocked {
+            // Blocking must also stop unattended receipt, or the block would
+            // cover browsing and leave the silent path open.
+            peer.auto_accept = false;
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn set_peer_auto_accept(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    mutate_config(&app, &state, |config| {
+        let peer = config
+            .peers
+            .iter_mut()
+            .find(|p| p.device_id == device_id)
+            .ok_or_else(|| "that device is not paired".to_string())?;
+        if enabled && peer.blocked {
+            return Err("unblock the device first".to_string());
+        }
+        peer.auto_accept = enabled;
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Peers: transfers
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn list_transfers(state: State<'_, AppState>) -> Vec<Transfer> {
+    crate::transfer::snapshot(&state)
+}
+
+#[tauri::command]
+pub(crate) fn cancel_transfer(state: State<'_, AppState>, transfer_id: u64) -> bool {
+    crate::transfer::request_cancel(&state, transfer_id)
+}
+
+#[tauri::command]
+pub(crate) fn list_incoming_offers(state: State<'_, AppState>) -> Vec<OfferView> {
+    crate::peers::list_offers(&state)
+}
+
+#[tauri::command]
+pub(crate) fn accept_offer(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    offer_id: String,
+    always_accept: bool,
+) -> Result<(), String> {
+    let peer_id =
+        crate::peers::set_offer_state(&state, &offer_id, true).map_err(|e| e.to_string())?;
+    if always_accept {
+        // Set in the SAME call rather than making the UI follow up: across two
+        // round trips the next offer from this peer could land in between and
+        // be judged against the policy the user just changed.
+        set_peer_auto_accept(app, state, peer_id, true)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn decline_offer(state: State<'_, AppState>, offer_id: String) -> Result<(), String> {
+    crate::peers::set_offer_state(&state, &offer_id, false)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Send files to a paired device.
+#[tauri::command]
+pub(crate) fn start_send_files_task(
+    state: State<'_, AppState>,
+    device_id: String,
+    paths: Vec<String>,
+) -> Result<TaskHandle, String> {
+    let peer = {
+        let registry = state
+            .peers
+            .read()
+            .map_err(|_| "peer state poisoned".to_string())?;
+        registry
+            .by_id(&device_id)
+            .cloned()
+            .ok_or_else(|| "that device is not paired".to_string())?
+    };
+    if peer.blocked {
+        return Err("that device is blocked".to_string());
+    }
+
+    let address = resolve_peer_address(&state, &peer)
+        .ok_or_else(|| format!("{} is not reachable right now", peer.name))?;
+    let plan = crate::peerclient::plan_send(&paths).map_err(|e| e.to_string())?;
+
+    // Allocated only once everything that can fail synchronously has passed, so
+    // a rejected send leaves no orphan task or transfer row behind.
+    let task_id = alloc_task(&state, "send_starting", "Waiting for the other device")?;
+    let transfer_id = crate::transfer::begin_state(
+        &state,
+        "out",
+        &peer.device_id,
+        &peer.name,
+        plan.files.len(),
+        plan.total_bytes,
+    );
+    let cancel = crate::transfer::cancel_flag(&state, transfer_id);
+
+    let tasks = Arc::clone(&state.tasks);
+    let transfers = Arc::clone(&state.transfers);
+    let cancels = Arc::clone(&state.transfer_cancels);
+
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(err) => {
+                finish_send_task(&tasks, task_id, Err(err.to_string()));
+                return;
+            }
+        };
+
+        let result = runtime.block_on(async {
+            let offer_id =
+                crate::peerclient::offer_and_wait(&address, &peer.out_token, &plan, &cancel)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+            for (index, (path, meta)) in plan.files.iter().enumerate() {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("cancelled".to_string());
+                }
+                edit_transfer(&transfers, transfer_id, |row| {
+                    row.file_index = index;
+                    row.file_name = meta.name.clone();
+                    row.file_bytes = 0;
+                    row.file_total_bytes = meta.size;
+                });
+                set_task_progress(
+                    &tasks,
+                    task_id,
+                    "sending",
+                    index as f64 / plan.files.len().max(1) as f64,
+                    format!("{} ({}/{})", meta.name, index + 1, plan.files.len()),
+                );
+
+                let progress_table = Arc::clone(&transfers);
+                crate::peerclient::send_file(
+                    &address,
+                    &peer.out_token,
+                    &offer_id,
+                    index,
+                    path,
+                    meta.size,
+                    Arc::clone(&cancel),
+                    move |sent| {
+                        edit_transfer(&progress_table, transfer_id, |row| {
+                            row.bytes += sent;
+                            row.file_bytes = sent;
+                        });
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            }
+            Ok::<_, String>(plan.files.len())
+        });
+
+        let (status, error) = match &result {
+            Ok(_) => ("done", None),
+            Err(err) if err == "cancelled" => ("cancelled", None),
+            Err(err) if err == "declined" => ("declined", None),
+            Err(err) => ("failed", Some(err.clone())),
+        };
+        edit_transfer(&transfers, transfer_id, |row| {
+            row.status = status.to_string();
+            row.error = error.clone();
+        });
+        if let Ok(mut c) = cancels.lock() {
+            c.remove(&transfer_id);
+        }
+        finish_send_task(&tasks, task_id, result.map(|n| n as u64));
+    });
+
+    Ok(TaskHandle { id: task_id })
+}
+
+fn edit_transfer<F: FnOnce(&mut Transfer)>(
+    transfers: &Arc<Mutex<std::collections::VecDeque<Transfer>>>,
+    id: u64,
+    edit: F,
+) {
+    if let Ok(mut rows) = transfers.lock() {
+        if let Some(row) = rows.iter_mut().find(|t| t.id == id) {
+            edit(row);
+            row.updated_at_ms = utils::now_ms();
+        }
+    }
+}
+
+fn finish_send_task(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    result: Result<u64, String>,
+) {
+    if let Ok(mut guard) = tasks.lock() {
+        if let Some(payload) = guard.get_mut(&task_id) {
+            payload.done = true;
+            payload.progress = 1.0;
+            match result {
+                Ok(count) => {
+                    payload.phase = "done".to_string();
+                    payload.message = format!("Sent {count} file(s)");
+                }
+                Err(err) => {
+                    payload.phase = "error".to_string();
+                    payload.error = Some(err);
+                }
+            }
+        }
+    }
+}
+
+/// Where to reach a peer: the live beacon first, then whatever address they
+/// last contacted us from.
+fn resolve_peer_address(state: &AppState, peer: &Peer) -> Option<String> {
+    if let Ok(table) = state.discovered.lock() {
+        if let Some(found) = table.get(&peer.device_id) {
+            if let Some(address) = found.best_address() {
+                return Some(format!("{}:{}", address, found.port));
+            }
+        }
+    }
+    peer.last_address.clone()
+}
+
+// ---------------------------------------------------------------------------
+// Peers: browse
+// ---------------------------------------------------------------------------
+
+/// List a paired device's shares, or one folder inside one.
+///
+/// This calls THEIR ordinary `/api/shares` and `/api/list` with the pair token.
+/// Nothing peer-specific exists on the far side -- which is the whole point of
+/// giving a peer a real session scope instead of a parallel API, because it
+/// means the containment checks exercised by the browser path are the same code
+/// protecting this one.
+#[tauri::command]
+pub(crate) async fn peer_browse(
+    state: State<'_, AppState>,
+    device_id: String,
+    share_id: Option<String>,
+    path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (token, address) = {
+        let registry = state
+            .peers
+            .read()
+            .map_err(|_| "peer state poisoned".to_string())?;
+        let peer = registry
+            .by_id(&device_id)
+            .cloned()
+            .ok_or_else(|| "that device is not paired".to_string())?;
+        if peer.blocked {
+            return Err("that device is blocked".to_string());
+        }
+        let address = resolve_peer_address(&state, &peer)
+            .ok_or_else(|| format!("{} is not reachable right now", peer.name))?;
+        (peer.out_token, address)
+    };
+
+    let route = match share_id {
+        Some(share) => format!(
+            "/api/list?share={}&path={}",
+            utils::url_encode(&share),
+            utils::url_encode(path.as_deref().unwrap_or(""))
+        ),
+        None => "/api/shares".to_string(),
+    };
+
+    crate::peerclient::get_authed(&address, &route, &token)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Send to phone
+// ---------------------------------------------------------------------------
+
+/// Hand a set of files to a device that cannot run this app.
+///
+/// A phone cannot be a peer -- there is no Tauri binary for it -- so instead of
+/// a second mechanism this mints a short-lived share containing exactly the
+/// chosen files and returns a link plus a QR code. Everything downstream is the
+/// receiver UI that already exists: the phone browses, streams and downloads
+/// through the same code paths a normal share uses.
+#[tauri::command]
+pub(crate) fn create_handoff(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    minutes: u64,
+) -> Result<HandoffView, String> {
+    if !server::is_running(&state) {
+        return Err("start the server first".to_string());
+    }
+    if paths.is_empty() {
+        return Err("pick at least one file".to_string());
+    }
+
+    // Every file must sit in one folder: the share is rooted at that folder and
+    // narrowed to these names. Files from two places would need two shares, and
+    // two links is not a thing to hand someone.
+    let mut parent: Option<PathBuf> = None;
+    let mut names: Vec<String> = Vec::new();
+    for raw in &paths {
+        let path = PathBuf::from(raw);
+        let meta = std::fs::metadata(&path).map_err(|_| format!("cannot read {raw}"))?;
+        if !meta.is_file() {
+            return Err("only files can be sent this way".to_string());
+        }
+        let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
+            return Err(format!("cannot work out where {raw} lives"));
+        };
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return Err(format!("cannot read the name of {raw}"));
+        };
+        // The same validator every other path goes through.
+        shares::check_segment(&name).map_err(|e| e.message())?;
+
+        match &parent {
+            None => parent = Some(dir),
+            Some(existing) if *existing == dir => {}
+            Some(_) => {
+                return Err(
+                    "pick files from a single folder -- they are shared as one link".to_string(),
+                )
+            }
+        }
+        names.push(name);
+    }
+
+    let parent = parent.ok_or_else(|| "pick at least one file".to_string())?;
+    let root = shares::canonical_root(&parent.to_string_lossy()).map_err(|e| e.to_string())?;
+
+    let minutes = minutes.clamp(1, 24 * 60);
+    let expires_ms = utils::now_ms() + minutes * 60_000;
+    let token = auth::random_token();
+    let id = auth::random_id();
+    let label = if names.len() == 1 {
+        names[0].clone()
+    } else {
+        format!("{} files", names.len())
+    };
+
+    let share = crate::models::ResolvedShare {
+        cfg: Share {
+            id: id.clone(),
+            name: label.clone(),
+            path: shares::display_path(&root),
+            token: token.clone(),
+            enabled: true,
+            is_inbox: false,
+            read_only: true,
+            is_file: false,
+            // Only the top level: the chosen files are all in `root`, and a
+            // handoff has no business exposing subfolders.
+            recursive: false,
+            include_names: names.clone(),
+            include_ext: Vec::new(),
+            exclude_ext: Vec::new(),
+            added_ms: utils::now_ms(),
+            note: None,
+        },
+        root,
+        root_exists: true,
+        expires_ms: Some(expires_ms),
+    };
+
+    {
+        let mut registry = state
+            .shares
+            .write()
+            .map_err(|_| "share state poisoned".to_string())?;
+        registry.sweep_ephemeral(utils::now_ms());
+        registry.ephemeral.push(share);
+    }
+
+    let status = server::status_impl(&state);
+    let host = link_host().ok_or_else(|| "no network address to share from".to_string())?;
+    let url = format!("http://{}:{}/s/{}", host, status.port, token);
+    let svg = net::qr_svg(&url, 320).map_err(|e| e.to_string())?;
+
+    Ok(HandoffView {
+        id,
+        url,
+        svg,
+        label,
+        file_count: names.len(),
+        expires_ms,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn revoke_handoff(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let mut registry = state
+        .shares
+        .write()
+        .map_err(|_| "share state poisoned".to_string())?;
+    registry.ephemeral.retain(|s| s.cfg.id != id);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn list_handoffs(state: State<'_, AppState>) -> Vec<HandoffView> {
+    let status = server::status_impl(&state);
+    let host = link_host();
+    let Ok(mut registry) = state.shares.write() else {
+        return Vec::new();
+    };
+    registry.sweep_ephemeral(utils::now_ms());
+    registry
+        .ephemeral
+        .iter()
+        .map(|s| HandoffView {
+            id: s.cfg.id.clone(),
+            url: host
+                .as_ref()
+                .map(|h| format!("http://{}:{}/s/{}", h, status.port, s.cfg.token))
+                .unwrap_or_default(),
+            // The QR is regenerated on demand rather than stored -- it is a
+            // few hundred bytes of SVG derived entirely from the URL.
+            svg: String::new(),
+            label: s.cfg.name.clone(),
+            file_count: s.cfg.include_names.len(),
+            expires_ms: s.expires_ms.unwrap_or(0),
+        })
+        .collect()
+}

@@ -1,0 +1,122 @@
+[package]
+name = "lan_share_tauri"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+rfd = "0.15"
+walkdir = "2"
+
+# ---------------------------------------------------------------------------
+# HTTP server.
+#
+# tauri 2.x already depends on tokio with ["rt","rt-multi-thread","sync","fs",
+# "io-util"], so the multi-threaded runtime is compiled into the binary whether
+# or not we use it. We add only "net" (TcpListener) and "time" (rate-limit
+# backoff, shutdown deadlines). No "macros": the runtime is built by hand on a
+# std::thread, never via #[tokio::main].
+# ---------------------------------------------------------------------------
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "fs", "io-util", "net", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+# ReceiverStream bridges the blocking zip writer to an async response body.
+tokio-stream = { version = "0.1", features = ["sync"] }
+axum = { version = "0.8", default-features = false, features = [
+    "http1",       # HTTP/1.1 only; no browser needs h2 over plaintext here
+    "tokio",       # axum::serve + ConnectInfo
+    "json",
+    "query",
+    "form",
+    "multipart",   # inbox uploads (streaming)
+] }
+# ServeFile is why axum is here: Range -> 206 + Content-Range, If-Range,
+# Last-Modified/If-Modified-Since, 416 on unsatisfiable, chunked streaming.
+# Getting that wrong means iOS Safari silently refuses to play video.
+tower-http = { version = "0.6", default-features = false, features = ["fs", "limit"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+bytes = "1"
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# The OUTBOUND peer client. Both are already compiled into the binary as axum's
+# own dependencies, so promoting them to direct deps costs no build time.
+# reqwest was rejected: it drags in a TLS stack, and peer traffic is plaintext
+# on the LAN by the same necessity as the browser traffic.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+# SO_REUSEADDR before bind on the discovery socket. std::net::UdpSocket has no
+# way to set it, and without it a second instance on one machine -- the
+# configuration we test against -- cannot bind.
+socket2 = "0.5"
+mime = "0.3"
+mime_guess = "2"
+percent-encoding = "2"
+
+# ---------------------------------------------------------------------------
+# Tokens / hashing.
+# getrandom is already in the tree via tauri (OS CSPRNG: BCryptGenRandom on
+# Windows). subtle is a zero-dependency constant-time compare. sha2 is already
+# compiled in via wry, so a direct dep costs nothing and gives a cache key that
+# is STABLE ACROSS RUST RELEASES -- std's DefaultHasher explicitly is not.
+# ---------------------------------------------------------------------------
+getrandom = "0.3"
+subtle = "2.6"
+sha2 = "0.10"
+
+# ---------------------------------------------------------------------------
+# Thumbnails. No AVIF/HEIC: those need C libs (dav1d / libheif) and would break
+# the "no external toolchain" property. JPEG output only -- image 0.25 removed
+# the WebP encoder, and PNG is ~10x larger for photos.
+# ---------------------------------------------------------------------------
+image = { version = "0.25.2", default-features = false, features = [
+    "jpeg", "png", "gif", "webp", "bmp", "tiff",
+] }
+
+# ---------------------------------------------------------------------------
+# LAN.
+# if-addrs over local-ip-address: we need EVERY interface (a laptop typically
+# has Wi-Fi + Ethernet + Hyper-V vEthernet + WSL + VirtualBox Host-Only) plus
+# the interface NAME so the virtual ones can be ranked out of the QR code.
+# local-ip-address's headline API returns one address and hides the names.
+# On Windows if-addrs calls GetAdaptersAddresses; on unix, getifaddrs.
+# ---------------------------------------------------------------------------
+if-addrs = "0.13"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# Canonicalize for DISPLAY without the \\?\ prefix (Explorer chokes on it).
+# Already in the tree via tauri.
+dunce = "1"
+
+# Folder download. The `zip` crate is deliberately NOT used: it seeks backwards
+# to patch each local file header once the size is known, which a socket cannot
+# do, so it can only write to a file. src/zipstream.rs writes the same format
+# forward-only via data descriptors, and needs just the checksum.
+crc32fast = "1"
+
+[dev-dependencies]
+# Only to READ back what src/zipstream.rs writes. Verifying a hand-rolled
+# archive format against an independent implementation is the whole point --
+# asserting our own bytes against our own constants would prove nothing.
+zip = { version = "2", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+# SetThreadExecutionState: stop the laptop suspending mid-transfer. Already in
+# the tree via tao/wry, so this pulls in no new compile.
+windows = { version = "0.61", features = ["Win32_System_Power", "Win32_Foundation"] }
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
