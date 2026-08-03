@@ -2122,6 +2122,42 @@ input[type="text"]:disabled {
 /* =========================================================
 
 
+/* Tooltips — one element, moved and filled by app.js §19.
+
+   Above dialogs (1400) so a tip inside one is not swallowed, below toasts
+   (1600) because a toast is the more important thing to read. `position:
+   fixed` and a body-level home are what keep it out of the scrolling,
+   clipping containers most of these buttons live in. */
+.tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1500;
+  max-width: 300px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  /* Never eat the hover it is describing. */
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.tooltip.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip { transition: none; transform: none; }
+}
+
 /* Toast notifications — transient, auto-dismissing, bottom-right. */
 .toast-host {
   position: fixed;
@@ -2311,6 +2347,20 @@ input[type="text"]:disabled {
 .power-label { display: grid; gap: 3px; min-width: 0; }
 .power-title { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
 .power-sub { font-size: 12.5px; color: var(--text-muted); }
+
+/* The visibility switch on the Devices page is the same control as the server
+   one, deliberately: both answer "on or off, right now". A notch smaller
+   because it sits inside a card instead of being the page's headline. */
+.visibility-card {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px 18px 16px;
+  border-top: 1px solid var(--line);
+}
+.visibility-card .power-toggle { width: 64px; height: 36px; }
+.visibility-card .power-toggle::after { width: 28px; height: 28px; }
+.visibility-card .power-toggle.is-on::after { transform: translateX(28px); }
+.visibility-card .power-title { font-size: 15px; }
 
 /* --------------------------------------------------------- url + qr hero */
 
@@ -2873,7 +2923,9 @@ input[type="text"]:disabled {
 
 .self-meta { font-size: 12px; }
 
-.self-visible { flex: none; }
+/* The live "Visible / Hidden" read-out. The switch below it is the control;
+   this is the same at-a-glance status the header pill gives the server. */
+.self-visible { flex: none; align-self: center; }
 
 .self-foot {
   display: flex;

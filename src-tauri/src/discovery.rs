@@ -301,6 +301,53 @@ fn beacon_for(ctx: &ServerCtx, alive: bool) -> Beacon {
     }
 }
 
+/// What the announce loop owes the network on this pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BeaconAction {
+    /// "Here I am", repeated every tick while visible.
+    Announce,
+    /// "I'm going" -- sent once, on the way from visible to hidden.
+    Goodbye,
+    Nothing,
+}
+
+/// The visibility rule, pulled out of the loop so it can be tested without a
+/// socket. `announcing` is what the network currently believes.
+///
+/// A goodbye is owed exactly once per visible period: repeating it every tick
+/// while hidden would be pointless traffic, and skipping it altogether leaves
+/// this device on everyone else's screen until the 20-second offline threshold
+/// expires -- which is what makes a visibility switch feel broken.
+pub(crate) fn beacon_action(visible: bool, port: u16, announcing: bool) -> BeaconAction {
+    // No port, no packet -- not even a goodbye, since there is nowhere to
+    // address it. Changing the port needs a rebind anyway.
+    if port == 0 {
+        return BeaconAction::Nothing;
+    }
+    match (visible, announcing) {
+        (true, _) => BeaconAction::Announce,
+        (false, true) => BeaconAction::Goodbye,
+        (false, false) => BeaconAction::Nothing,
+    }
+}
+
+/// One beacon to every broadcast address and the multicast group. Best effort
+/// throughout: a single unreachable interface must not stop the others.
+async fn send_beacon(ctx: &ServerCtx, socket: &UdpSocket, port: u16, alive: bool) {
+    if port == 0 {
+        return;
+    }
+    let packet = beacon_for(ctx, alive).encode();
+    for target in announce_targets(port) {
+        let _ = socket.send_to(&packet, target).await;
+    }
+}
+
+/// Announce while visible; say goodbye the moment we stop being.
+///
+/// The visibility switch lives here rather than in the socket's lifetime: the
+/// socket stays bound either way, because being invisible has never meant
+/// being blind, and rebinding it would need a server restart.
 pub(crate) async fn announce_loop(
     ctx: ServerCtx,
     socket: Arc<UdpSocket>,
@@ -309,26 +356,43 @@ pub(crate) async fn announce_loop(
     ctx.discovery_started_ms.store(now_ms(), Ordering::Relaxed);
     let mut tick = tokio::time::interval(Duration::from_millis(ANNOUNCE_EVERY_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // `interval`'s first tick completes immediately; consume it here so the
+    // announce below is not doubled on the first pass through the loop.
+    tick.tick().await;
+
+    // What the rest of the network currently believes about us. Exactly one
+    // goodbye is sent per visible period -- none if we never announced, and
+    // none repeated while already hidden.
+    let mut announcing = false;
 
     loop {
-        tokio::select! {
-            _ = tick.tick() => {
-                // Read live: renaming the device or flipping "discoverable"
-                // takes effect on the next tick without a restart.
-                let (discoverable, port) = ctx
-                    .settings
-                    .read()
-                    .map(|s| (s.discoverable && s.peering_enabled, s.discovery_port))
-                    .unwrap_or((false, 0));
-                if !discoverable || port == 0 {
-                    continue;
-                }
-                let packet = beacon_for(&ctx, true).encode();
-                for target in announce_targets(port) {
-                    // A single unreachable interface must not stop the others.
-                    let _ = socket.send_to(&packet, target).await;
-                }
+        // Read live: renaming the device or flipping "visible" takes effect on
+        // the next tick, and at once when the toggle wakes us.
+        let (visible, port) = ctx
+            .settings
+            .read()
+            .map(|s| (s.discoverable && s.peering_enabled, s.discovery_port))
+            .unwrap_or((false, 0));
+
+        match beacon_action(visible, port, announcing) {
+            BeaconAction::Announce => {
+                send_beacon(&ctx, &socket, port, true).await;
+                announcing = true;
             }
+            // Switched to invisible. Announce the departure instead of merely
+            // falling silent: silence takes the full 20-second offline
+            // threshold to register, which reads as a button that did nothing.
+            BeaconAction::Goodbye => {
+                send_beacon(&ctx, &socket, port, false).await;
+                announcing = false;
+            }
+            BeaconAction::Nothing => {}
+        }
+
+        tokio::select! {
+            _ = tick.tick() => {}
+            // `set_discoverable` pokes this, so the switch acts now.
+            _ = ctx.discovery_wake.notified() => {}
             _ = shutdown.wait_for(|stop| *stop) => break,
         }
     }
@@ -336,16 +400,9 @@ pub(crate) async fn announce_loop(
     // Goodbye, best effort. It turns "offline in 20 seconds" into "offline
     // now" on every other device, which is the difference between the list
     // feeling live and feeling stale.
-    let port = ctx
-        .settings
-        .read()
-        .map(|s| s.discovery_port)
-        .unwrap_or(0);
-    if port != 0 {
-        let packet = beacon_for(&ctx, false).encode();
-        for target in announce_targets(port) {
-            let _ = socket.send_to(&packet, target).await;
-        }
+    if announcing {
+        let port = ctx.settings.read().map(|s| s.discovery_port).unwrap_or(0);
+        send_beacon(&ctx, &socket, port, false).await;
     }
 }
 

@@ -1480,6 +1480,7 @@ fn fixture_with(opts: FixtureOpts) -> HttpFixture {
         receive_dir: receive_dir.clone(),
         discovery_self_seen_ms: Arc::new(AtomicU64::new(0)),
         discovery_started_ms: Arc::new(AtomicU64::new(0)),
+        discovery_wake: Arc::new(tokio::sync::Notify::new()),
     };
 
     HttpFixture {
@@ -3222,6 +3223,135 @@ fn discovery_health_distinguishes_a_block_from_an_empty_network() {
     assert_eq!(health_from(now - 60_000, now - 1_000, false), "ok");
     // Never started.
     assert_eq!(health_from(0, 0, true), "ok");
+}
+
+/// Going invisible stops the beacon, so we stop hearing ourselves -- which is
+/// exactly the signal `health_from` reads as a firewall block. `set_discoverable`
+/// re-stamps the start time when visibility comes back, and this is the rule
+/// that makes that work: without it the Devices page would accuse the firewall
+/// the instant the switch went back on.
+#[test]
+fn re_arming_visibility_clears_a_stale_block_warning() {
+    use crate::discovery::health_from;
+    let now = crate::utils::now_ms();
+
+    // Hidden for ten minutes: no beacon sent, so none heard back.
+    assert_eq!(
+        health_from(now - 600_000, now - 600_000, true),
+        "inbound_likely_blocked"
+    );
+    // Switched back on: the grace window reopens even though the last
+    // self-sighting is still ten minutes old.
+    assert_eq!(health_from(now, now - 600_000, true), "ok");
+}
+
+// ===========================================================================
+// Visibility
+// ===========================================================================
+
+/// The whole visibility switch in one table: what the announce loop owes the
+/// network for each combination of "the user wants to be seen" and "the
+/// network currently believes we are here".
+#[test]
+fn the_visibility_switch_announces_and_says_goodbye_once() {
+    use crate::discovery::{beacon_action, BeaconAction};
+    const PORT: u16 = 57321;
+
+    // Visible: announce on every pass, whether or not we already were.
+    assert_eq!(beacon_action(true, PORT, false), BeaconAction::Announce);
+    assert_eq!(beacon_action(true, PORT, true), BeaconAction::Announce);
+    // Switched off while the network thinks we are here: exactly one goodbye.
+    assert_eq!(beacon_action(false, PORT, true), BeaconAction::Goodbye);
+    // Already hidden: silence, not a goodbye every five seconds.
+    assert_eq!(beacon_action(false, PORT, false), BeaconAction::Nothing);
+    // Never announced, then stopped: nothing to take back.
+    assert_eq!(beacon_action(false, PORT, false), BeaconAction::Nothing);
+    // No port is nowhere to send, goodbye included.
+    assert_eq!(beacon_action(true, 0, true), BeaconAction::Nothing);
+    assert_eq!(beacon_action(false, 0, true), BeaconAction::Nothing);
+}
+
+/// One visible period produces one goodbye, at the moment the switch flips --
+/// not one per tick, and not one at shutdown for a device that was already
+/// hidden.
+#[test]
+fn a_hidden_device_falls_silent_after_a_single_goodbye() {
+    use crate::discovery::{beacon_action, BeaconAction};
+    const PORT: u16 = 57321;
+
+    // Five ticks visible, then five hidden.
+    let visibility = [true, true, true, true, true, false, false, false, false, false];
+    let mut announcing = false;
+    let mut sent: Vec<BeaconAction> = Vec::new();
+
+    for visible in visibility {
+        let action = beacon_action(visible, PORT, announcing);
+        match action {
+            BeaconAction::Announce => announcing = true,
+            BeaconAction::Goodbye => announcing = false,
+            BeaconAction::Nothing => {}
+        }
+        if action != BeaconAction::Nothing {
+            sent.push(action);
+        }
+    }
+
+    assert_eq!(sent.iter().filter(|a| **a == BeaconAction::Goodbye).count(), 1);
+    assert_eq!(sent.last(), Some(&BeaconAction::Goodbye));
+    // And the loop knows not to send a second one on shutdown.
+    assert!(!announcing);
+}
+
+/// The switch pokes the announce loop so it acts now rather than up to five
+/// seconds later. `notify_one` is load-bearing: it leaves a permit when the
+/// loop is mid-send and therefore not yet waiting, where `notify_waiters`
+/// would drop the poke on the floor and the device would stay visible for
+/// another tick.
+#[test]
+fn a_visibility_poke_survives_a_busy_announce_loop() {
+    let notify = tokio::sync::Notify::new();
+
+    // Poked while the loop is off sending beacons, not yet at its select!.
+    notify.notify_one();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_millis(250), notify.notified())
+            .await
+            .expect("the poke was lost, so the switch would wait for the next tick");
+    });
+}
+
+/// `set_discoverable` restarts the server only when the discovery socket is
+/// genuinely missing. Stopping has to clear the flag, or the next start would
+/// inherit a stale "already bound" and never restart to rebind.
+#[test]
+fn stopping_the_server_forgets_the_discovery_socket() {
+    use std::sync::atomic::Ordering;
+
+    let state = crate::models::AppState::new();
+    state.discovery_bound.store(true, Ordering::Relaxed);
+    state
+        .discovery_started_ms
+        .store(crate::utils::now_ms(), Ordering::Relaxed);
+
+    crate::server::stop_server_impl(&state).unwrap();
+
+    assert!(!state.discovery_bound.load(Ordering::Relaxed));
+    // Zeroed too, so the health heuristic reports "ok" rather than accusing
+    // the firewall over a socket that is simply not running.
+    assert_eq!(state.discovery_started_ms.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        crate::discovery::health_from(
+            state.discovery_started_ms.load(Ordering::Relaxed),
+            0,
+            true
+        ),
+        "ok"
+    );
 }
 
 // ===========================================================================

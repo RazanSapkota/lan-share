@@ -22,6 +22,7 @@
     16  Settings page
     17  Event wiring + boot
     18  Devices — discovery, pairing, transfers
+    19  Tooltips
    ========================================================= */
 
 // ============================================================
@@ -856,18 +857,21 @@ function shareRowHtml(share) {
   const link = share.link;
   const linkCell = link
     ? `<div class="link-cell">
-         <span class="link-text" title="${escapeHtml(link)}">${escapeHtml(revealed ? link : maskLink(link))}</span>
-         <button class="icon-button" type="button" data-act="reveal" data-id="${escapeHtml(share.id)}" aria-label="Show link">
+         <span class="link-text" data-tip="${escapeHtml(link)}">${escapeHtml(revealed ? link : maskLink(link))}</span>
+         <button class="icon-button" type="button" data-act="reveal" data-id="${escapeHtml(share.id)}" aria-label="Show link"
+                 data-tip="${revealed ? "Mask the link again." : "Show the whole link. It is hidden by default so it cannot be read over your shoulder."}">
            <span class="material-symbols-outlined">${revealed ? "visibility_off" : "visibility"}</span>
          </button>
-         <button class="icon-button" type="button" data-act="copy-link" data-id="${escapeHtml(share.id)}" aria-label="Copy link">
+         <button class="icon-button" type="button" data-act="copy-link" data-id="${escapeHtml(share.id)}" aria-label="Copy link"
+                 data-tip="Copy this share's private link. Anyone who has it opens this folder — and only this folder — without the PIN.">
            <span class="material-symbols-outlined">content_copy</span>
          </button>
-         <button class="icon-button" type="button" data-act="qr" data-id="${escapeHtml(share.id)}" aria-label="Show QR code">
+         <button class="icon-button" type="button" data-act="qr" data-id="${escapeHtml(share.id)}" aria-label="Show QR code"
+                 data-tip="Show a QR code for this link, for a phone to scan.">
            <span class="material-symbols-outlined">qr_code_2</span>
          </button>
        </div>`
-    : '<span class="text-dim">Start the server</span>';
+    : '<span class="text-dim" data-tip="Secret links only exist while the server is running.">Start the server</span>';
 
   return `
     <tr class="${share.enabled ? "" : "is-disabled"}">
@@ -875,7 +879,8 @@ function shareRowHtml(share) {
         <button class="switch ${share.enabled ? "is-on" : ""}" type="button"
                 data-act="toggle" data-id="${escapeHtml(share.id)}"
                 role="switch" aria-checked="${share.enabled}"
-                aria-label="Share ${escapeHtml(share.name)}"></button>
+                aria-label="Share ${escapeHtml(share.name)}"
+                data-tip="${share.enabled ? "Pause this share. It disappears from the visitor's list and its secret link stops working." : "Serve this share again."}"></button>
       </td>
       <td>
         <div class="sh-name">${escapeHtml(share.name)}
@@ -884,24 +889,29 @@ function shareRowHtml(share) {
         </div>
         ${share.note ? '<div class="text-dim" style="font-size:11.5px">' + escapeHtml(share.note) + "</div>" : ""}
       </td>
-      <td><div class="sh-path" title="${escapeHtml(share.display_path)}">${escapeHtml(share.display_path)}</div></td>
+      <td><div class="sh-path" data-tip="${escapeHtml(share.display_path)}">${escapeHtml(share.display_path)}</div></td>
       <td class="sh-cell-num">${contents}</td>
       <td>${linkCell}</td>
       <td>${status}</td>
       <td class="sh-cell-actions">
-        <button class="icon-button" type="button" data-act="index" data-id="${escapeHtml(share.id)}" aria-label="Count files">
+        <button class="icon-button" type="button" data-act="index" data-id="${escapeHtml(share.id)}" aria-label="Count files"
+                data-tip="Count the files and add up the size in this folder. Reads the folder only — nothing is changed.">
           <span class="material-symbols-outlined">calculate</span>
         </button>
-        <button class="icon-button" type="button" data-act="open" data-id="${escapeHtml(share.id)}" aria-label="Show in file manager">
+        <button class="icon-button" type="button" data-act="open" data-id="${escapeHtml(share.id)}" aria-label="Show in file manager"
+                data-tip="Open this folder in File Explorer.">
           <span class="material-symbols-outlined">folder_open</span>
         </button>
-        <button class="icon-button" type="button" data-act="edit" data-id="${escapeHtml(share.id)}" aria-label="Edit share">
+        <button class="icon-button" type="button" data-act="edit" data-id="${escapeHtml(share.id)}" aria-label="Edit share"
+                data-tip="Rename it, add a note, exclude subfolders, or limit which file types are visible.">
           <span class="material-symbols-outlined">tune</span>
         </button>
-        <button class="icon-button" type="button" data-act="regen" data-id="${escapeHtml(share.id)}" aria-label="New secret link">
+        <button class="icon-button" type="button" data-act="regen" data-id="${escapeHtml(share.id)}" aria-label="New secret link"
+                data-tip="Issue a new secret link. The old one stops working at once, and anyone using it is signed out.">
           <span class="material-symbols-outlined">key</span>
         </button>
-        <button class="icon-button" type="button" data-act="remove" data-id="${escapeHtml(share.id)}" aria-label="Stop sharing">
+        <button class="icon-button" type="button" data-act="remove" data-id="${escapeHtml(share.id)}" aria-label="Stop sharing"
+                data-tip="Stop sharing this folder. The folder and its files stay exactly where they are on disk.">
           <span class="material-symbols-outlined">delete</span>
         </button>
       </td>
@@ -1156,7 +1166,7 @@ function renderActivity() {
         <td class="act-ip">${escapeHtml(entry.client_ip)}</td>
         <td><span class="act-action act-${escapeHtml(entry.kind)}">${escapeHtml(ACTION_LABELS[entry.kind] || entry.kind)}</span></td>
         <td>
-          <div class="act-cell-file" title="${escapeHtml(entry.path || "")}">${escapeHtml(entry.path || "—")}</div>
+          <div class="act-cell-file"${entry.path ? ` data-tip="${escapeHtml(entry.path)}"` : ""}>${escapeHtml(entry.path || "—")}</div>
           ${entry.share_name ? '<div class="act-share">' + escapeHtml(entry.share_name) + "</div>" : ""}
         </td>
         <td class="act-bytes">${escapeHtml(bytes)}</td>
@@ -1187,7 +1197,8 @@ async function loadSessions() {
         <span class="badge">${escapeHtml(s.scope)}</span>
         <span class="spacer"><span class="session-ua">${escapeHtml(s.user_agent || "unknown device")}</span></span>
         <span class="text-dim">${escapeHtml(formatClock(s.last_seen_ms))}</span>
-        <button class="icon-button" type="button" data-session="${escapeHtml(s.token)}" aria-label="Sign this device out">
+        <button class="icon-button" type="button" data-session="${escapeHtml(s.token)}" aria-label="Sign this device out"
+                data-tip="Sign this one browser out. It needs the PIN again; every other device is unaffected.">
           <span class="material-symbols-outlined">logout</span>
         </button>
       </div>`
@@ -1207,6 +1218,9 @@ async function loadThumbStats() {
 // ============================================================
 
 function wire() {
+  // Delegated from `document`, so it also covers every row rendered later.
+  wireTooltips();
+
   // --- sidebar ---
   document.querySelectorAll("[data-sidebar-link]").forEach((link) => {
     link.addEventListener("click", (event) => {
@@ -1440,10 +1454,15 @@ const PAIR_ACCEPT_ARM_MS = 1500;
 
 state.devices = {
   self: null,
-  discovery: { running: false, health: "ok", error: null, devices: [] },
+  // `running` means we are announcing (they can see us); `listening` means the
+  // socket is up (we can see them). Going invisible only stops the first.
+  discovery: { running: false, listening: false, health: "ok", error: null, devices: [] },
   peers: [],
   filter: "",
   tickTimer: null,
+  // Latched while set_discoverable is in flight, exactly like the server
+  // toggle's `transitioning`, so a double-click cannot fire twice.
+  visibilityBusy: false,
 };
 
 state.transfers = {
@@ -1544,6 +1563,9 @@ async function refreshDevices() {
   renderPeers();
   renderTransfers();
   renderDiscoveryNotice();
+  // The switch reads its own flag, but the text under it describes what is
+  // actually happening — which this tick is what just refreshed.
+  renderVisibility();
 }
 
 /// Runs on every page, forever. These two are requests from another human
@@ -1579,11 +1601,104 @@ async function loadIdentity() {
 
   // Do not stomp on the field while it is being edited.
   if (document.activeElement !== $("self-name")) $("self-name").value = identity.name;
-  $("self-discoverable").checked = identity.discoverable;
   $("self-receive").textContent = identity.receive_dir || "—";
   $("self-addr").textContent = identity.addresses.length
     ? identity.addresses[0]
     : "no network";
+  renderVisibility();
+}
+
+// --- visible / hidden ------------------------------------------------------
+
+/// The switch says what it will do; the text says what is true right now.
+/// Those differ more often than they look: "visible" with the server stopped
+/// announces nothing, and a UDP bind can fail with the flag still on. Reading
+/// the flag alone would leave the user staring at an on switch and an empty
+/// list on the other machine, with nothing on screen explaining why.
+function renderVisibility() {
+  const self = state.devices.self;
+  const { running, listening, error } = state.devices.discovery;
+  const wanted = !!(self && self.discoverable);
+  const peering = !self || self.peering_enabled !== false;
+  const busy = state.devices.visibilityBusy;
+
+  const toggle = $("visibility-toggle");
+  toggle.classList.toggle("is-on", wanted && peering);
+  toggle.classList.toggle("is-busy", busy);
+  // Nothing to switch when peering is off in the config: the beacon, the
+  // pairing endpoint and the whole Devices flow are disabled together.
+  toggle.disabled = busy || !peering;
+  toggle.setAttribute("aria-pressed", String(wanted && peering));
+
+  // Announcing for real, or merely switched on?
+  const live = wanted && peering && running;
+  const pill = $("visibility-pill");
+  pill.classList.toggle("pill-live", live);
+  pill.classList.toggle("pill-warn", wanted && peering && !live);
+  pill.classList.toggle("pill-off", !wanted || !peering);
+  $("visibility-pill-text").textContent = live
+    ? "Visible"
+    : wanted && peering
+      ? "Not announcing"
+      : "Hidden";
+
+  let title;
+  let sub;
+  if (!peering) {
+    title = "Devices are turned off";
+    sub = "Peering is disabled in the config file, so nothing is announced and nobody can pair.";
+  } else if (busy) {
+    title = wanted ? "Visible" : "Hidden";
+    sub = "Applying…";
+  } else if (!wanted) {
+    title = "Hidden";
+    sub = listening
+      ? "This device is not announcing itself. It still sees others, and devices you have already paired with can still reach it."
+      : "This device is not announcing itself. Devices you have already paired with can still reach it.";
+  } else if (error) {
+    title = "Visible";
+    sub = "Discovery could not start — see the note below. You can still be added by address.";
+  } else if (!state.server.running) {
+    title = "Visible";
+    sub = "Nothing is announced until the server is running — switch it on from the Dashboard.";
+  } else {
+    title = "Visible";
+    sub = "Anyone running LAN Share on this network can see this device and ask to pair.";
+  }
+  $("visibility-title").textContent = title;
+  $("visibility-sub").textContent = sub;
+}
+
+async function toggleVisibility() {
+  if (state.devices.visibilityBusy) return;
+  const next = !(state.devices.self && state.devices.self.discoverable);
+
+  state.devices.visibilityBusy = true;
+  // Optimistic, so the switch moves under the finger rather than a tick later.
+  // loadIdentity below replaces it with what the backend actually stored.
+  if (state.devices.self) state.devices.self.discoverable = next;
+  renderVisibility();
+
+  try {
+    const restarted = await call("set_discoverable", { enabled: next });
+    // Keep the config snapshot honest. Settings posts the whole object back on
+    // its next save, so a stale flag here would quietly undo this switch.
+    if (state.config) state.config.discoverable = next;
+    addLog(next ? "Now visible to other devices" : "Now hidden from other devices");
+    if (restarted) {
+      showToast("Server restarted to start announcing", "info");
+      state.qrCache = {};
+      await refreshServerStatus();
+    } else {
+      showToast(next ? "Visible to other devices" : "Hidden from other devices");
+    }
+  } catch (_err) {
+    /* already reported by call() */
+  } finally {
+    state.devices.visibilityBusy = false;
+    await loadIdentity();
+    await refreshDevices();
+  }
 }
 
 // --- discovered ------------------------------------------------------------
@@ -1609,8 +1724,10 @@ function dedupeDiscovered(list) {
 function renderDiscovered() {
   const host = $("nearby-list");
   const radar = $("radar");
-  const running = state.devices.discovery.running;
-  radar.classList.toggle("is-scanning", running);
+  // Scanning is about the ear, not the mouth: a hidden device still hears
+  // every beacon on the network, so the radar keeps sweeping while it does.
+  const listening = state.devices.discovery.listening;
+  radar.classList.toggle("is-scanning", listening);
 
   // Already-paired devices belong in the list below. Showing them in both
   // invites re-pairing something already trusted.
@@ -1620,17 +1737,23 @@ function renderDiscovered() {
   $("nearby-count").textContent = rows.length;
 
   if (!rows.length) {
+    // Three states, not two. Being hidden does not stop the search, so saying
+    // "discovery is off" while we are still listening would send the user off
+    // to flip a switch that is not the problem.
+    let title = "Looking for devices…";
+    let body = "Open LAN Share on another computer on this Wi-Fi and it will appear here.";
+    if (!listening && !state.server.running) {
+      title = "Discovery is off";
+      body = "Start the server on the Dashboard to look for devices.";
+    } else if (!listening) {
+      title = "Discovery is off";
+      body = "The discovery socket isn’t running. You can still add a device by address.";
+    }
     host.innerHTML = `
       <div class="device-empty">
-        <span class="material-symbols-outlined">${running ? "wifi_tethering" : "wifi_off"}</span>
-        <span class="device-empty-title">${
-          running ? "Looking for devices…" : "Discovery is off"
-        }</span>
-        <span class="device-empty-body">${
-          running
-            ? "Open LAN Share on another computer on this Wi-Fi and it will appear here."
-            : "Start the server and turn on “Visible to other devices”."
-        }</span>
+        <span class="material-symbols-outlined">${listening ? "wifi_tethering" : "wifi_off"}</span>
+        <span class="device-empty-title">${title}</span>
+        <span class="device-empty-body">${body}</span>
       </div>`;
     return;
   }
@@ -1638,7 +1761,7 @@ function renderDiscovered() {
   host.innerHTML = rows
     .map((d) => {
       const extra = d.addresses.length > 1
-        ? `<span class="badge" title="${escapeHtml(d.addresses.join(", "))}">+${d.addresses.length - 1} more</span>`
+        ? `<span class="badge" data-tip="This device answers on more than one address: ${escapeHtml(d.addresses.join(", "))}. Usually Wi-Fi and Ethernet at once.">+${d.addresses.length - 1} more</span>`
         : "";
       return `
       <div class="device-row ${d.online ? "is-online" : ""}">
@@ -1651,12 +1774,16 @@ function renderDiscovered() {
             </span>
             <span class="mono">${escapeHtml(d.addresses[0] || "")}</span>
             ${extra}
-            ${d.manual ? '<span class="badge">Added by hand</span>' : ""}
+            ${d.manual ? '<span class="badge" data-tip="You typed this one in rather than hearing it. It is never dropped from the list automatically.">Added by hand</span>' : ""}
           </span>
         </span>
         <span class="device-auto is-hidden-soft"></span>
-        <span class="device-actions">
-          <button class="primary-button" type="button" data-dev="pair" data-id="${escapeHtml(d.device_id)}" ${d.online ? "" : "disabled"}>
+        <!-- The tip sits on the wrapper while the button is disabled: a
+             disabled button is inert and never sees the pointer, so a tip on
+             it would be silent in exactly the case that needs explaining. -->
+        <span class="device-actions"${d.online ? "" : ' data-tip="This device has gone quiet, so there is nothing to pair with. It comes back on its own within seconds of reappearing."'}>
+          <button class="primary-button" type="button" data-dev="pair" data-id="${escapeHtml(d.device_id)}" ${d.online ? "" : "disabled"}
+                  data-tip="Ask this device to pair. Both screens then show the same six digits — check they match, then accept on the other one.">
             <span class="material-symbols-outlined">link</span>
             <span>Pair</span>
           </button>
@@ -1731,23 +1858,30 @@ function peerRowHtml(p) {
   // A blocked device keeps its row and its unblock button. Hiding it would
   // make the only route to undoing a block "remember that you did it".
   const actions = p.blocked
-    ? `<button class="ghost-button" type="button" data-dev="unblock" data-id="${id}">Unblock</button>
-       <button class="icon-button" type="button" data-dev="unpair" data-id="${id}" aria-label="Unpair">
+    ? `<button class="ghost-button" type="button" data-dev="unblock" data-id="${id}"
+               data-tip="Let this device talk to you again. It stays paired throughout — blocking never lost the pairing.">Unblock</button>
+       <button class="icon-button" type="button" data-dev="unpair" data-id="${id}" aria-label="Unpair"
+               data-tip="Forget this device entirely. You would both have to pair again from scratch.">
          <span class="material-symbols-outlined">link_off</span>
        </button>`
-    : `<button class="primary-button" type="button" data-dev="send" data-id="${id}" ${p.online ? "" : "disabled"}>
+    : `<button class="primary-button" type="button" data-dev="send" data-id="${id}" ${p.online ? "" : "disabled"}
+               data-tip="Pick files and send them straight to this device. It gets a prompt first, unless Always accept is on.">
          <span class="material-symbols-outlined">send</span><span>Send</span>
        </button>
-       <button class="ghost-button" type="button" data-dev="browse" data-id="${id}" ${p.online ? "" : "disabled"}>
+       <button class="ghost-button" type="button" data-dev="browse" data-id="${id}" ${p.online ? "" : "disabled"}
+               data-tip="Look through what that device shares and pull files from it, without touching its keyboard.">
          <span class="material-symbols-outlined">folder_open</span><span>Browse</span>
        </button>
-       <button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename">
+       <button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
+               data-tip="Rename this device in your list. Only you see the new name.">
          <span class="material-symbols-outlined">edit</span>
        </button>
-       <button class="icon-button" type="button" data-dev="block" data-id="${id}" aria-label="Block">
+       <button class="icon-button" type="button" data-dev="block" data-id="${id}" aria-label="Block"
+               data-tip="Refuse everything from this device. It stays in the list, so you can undo it later.">
          <span class="material-symbols-outlined">block</span>
        </button>
-       <button class="icon-button" type="button" data-dev="unpair" data-id="${id}" aria-label="Unpair">
+       <button class="icon-button" type="button" data-dev="unpair" data-id="${id}" aria-label="Unpair"
+               data-tip="Forget this device. Nothing is deleted, but you would both have to pair again.">
          <span class="material-symbols-outlined">link_off</span>
        </button>`;
 
@@ -1756,7 +1890,7 @@ function peerRowHtml(p) {
       <span class="device-icon"><span class="material-symbols-outlined">${deviceIcon(p.platform)}</span></span>
       <span class="device-body">
         <span class="device-name">${escapeHtml(p.name)}
-          ${p.auto_accept && !p.blocked ? '<span class="badge badge-auto">Auto</span>' : ""}
+          ${p.auto_accept && !p.blocked ? '<span class="badge badge-auto" data-tip="Files from this device are saved without asking you first.">Auto</span>' : ""}
         </span>
         <span class="device-sub">
           ${status}
@@ -1767,9 +1901,12 @@ function peerRowHtml(p) {
         <span class="device-auto-label">Always accept</span>
         <button class="switch ${p.auto_accept ? "is-on" : ""}" type="button"
                 data-dev="auto" data-id="${id}" role="switch"
-                aria-checked="${p.auto_accept}" aria-label="Always accept files from ${escapeHtml(p.name)}"></button>
+                aria-checked="${p.auto_accept}" aria-label="Always accept files from ${escapeHtml(p.name)}"
+                data-tip="${p.auto_accept ? "Go back to asking before files from this device are saved." : "Save files from this device without prompting. Only do this for a device you own."}"></button>
       </span>
-      <span class="device-actions">${actions}</span>
+      <!-- Wrapper tip, because a disabled Send/Browse button never sees the
+           pointer and so could not explain its own greyed-out state. -->
+      <span class="device-actions"${p.online || p.blocked ? "" : ' data-tip="Offline: Send and Browse need the other device awake and running LAN Share. Everything else here still works."'}>${actions}</span>
     </div>`;
 }
 
@@ -1847,7 +1984,7 @@ function transferRowHtml(t) {
   return `
     <div class="transfer-row is-${escapeHtml(t.status)}">
       <span class="transfer-dir ${out ? "is-out" : "is-in"}"
-            title="${out ? "Sending" : "Receiving"}">
+            data-tip="${out ? "Leaving this computer." : "Arriving from the other device, into your receive folder."}">
         <span class="material-symbols-outlined">${out ? "north_east" : "south_west"}</span>
       </span>
       <span class="transfer-main">
@@ -1857,11 +1994,11 @@ function transferRowHtml(t) {
           <span class="spacer"></span>
           <span class="transfer-idx">${t.file_count > 1 ? `${t.file_index + 1}/${t.file_count}` : ""}</span>
         </span>
-        <span class="progress-track transfer-track-file" role="progressbar"
+        <span class="progress-track transfer-track-file" role="progressbar" data-tip="Progress through the file named above."
               aria-label="Current file" aria-valuenow="${filePct}" aria-valuemin="0" aria-valuemax="100">
           <span class="progress-bar" style="width:${filePct}%"></span>
         </span>
-        <span class="progress-track transfer-track-total" role="progressbar"
+        <span class="progress-track transfer-track-total" role="progressbar" data-tip="Progress through the whole batch."
               aria-label="All files" aria-valuenow="${totalPct}" aria-valuemin="0" aria-valuemax="100">
           <span class="progress-bar" style="width:${totalPct}%"></span>
         </span>
@@ -1869,7 +2006,8 @@ function transferRowHtml(t) {
       </span>
       <span class="device-actions">
         ${canCancel
-          ? `<button class="icon-button" type="button" data-dev="cancel-transfer" data-id="${t.id}" aria-label="Cancel">
+          ? `<button class="icon-button" type="button" data-dev="cancel-transfer" data-id="${t.id}" aria-label="Cancel"
+                     data-tip="Stop this transfer now. A half-written file is deleted rather than left behind.">
                <span class="material-symbols-outlined">close</span>
              </button>`
           : ""}
@@ -2277,12 +2415,14 @@ async function loadHandoffs() {
       <div class="handoff-row">
         <span class="material-symbols-outlined">link</span>
         <span class="handoff-label">${escapeHtml(h.label)}</span>
-        <span class="text-dim">${relativeExpiry(h.expires_ms)}</span>
+        <span class="text-dim" data-tip="When this link stops working. It expires on its own — you do not have to remember to revoke it.">${relativeExpiry(h.expires_ms)}</span>
         <span class="spacer"></span>
-        <button class="icon-button" type="button" data-handoff="qr" data-id="${escapeHtml(h.id)}" aria-label="Show code">
+        <button class="icon-button" type="button" data-handoff="qr" data-id="${escapeHtml(h.id)}" aria-label="Show code"
+                data-tip="Show the QR code and link again, to scan it from another phone.">
           <span class="material-symbols-outlined">qr_code_2</span>
         </button>
-        <button class="icon-button" type="button" data-handoff="revoke" data-id="${escapeHtml(h.id)}" aria-label="Stop sharing">
+        <button class="icon-button" type="button" data-handoff="revoke" data-id="${escapeHtml(h.id)}" aria-label="Stop sharing"
+                data-tip="Kill this link now, before it expires. The files themselves are untouched.">
           <span class="material-symbols-outlined">close</span>
         </button>
       </div>`
@@ -2332,12 +2472,7 @@ function wireDevices() {
     }
   });
 
-  $("self-discoverable").addEventListener("change", async (event) => {
-    const restarted = await callQuiet("set_discoverable", { enabled: event.target.checked });
-    if (restarted) showToast("Server restarted to start announcing", "info");
-    loadIdentity();
-    refreshDevices();
-  });
+  $("visibility-toggle").addEventListener("click", toggleVisibility);
 
   $("self-receive-pick").addEventListener("click", async () => {
     const picked = await callQuiet("pick_receive_folder");
@@ -2428,5 +2563,156 @@ function wireDevices() {
     if (!$("browse-backdrop").classList.contains("hidden")) {
       $("browse-backdrop").classList.add("hidden");
     }
+  });
+}
+
+// ============================================================
+// 19  Tooltips
+// ============================================================
+
+/* Anything wearing `data-tip` explains itself on hover and on keyboard focus.
+   Three decisions worth writing down:
+
+   One element, positioned from JS against `document.body`, rather than a CSS
+   `::after` on each control. Half the buttons in this app live inside
+   `.shares-table-wrap` and the dialogs, which scroll and therefore clip; a
+   pseudo-element tooltip on a table-row button is cut off exactly where it is
+   needed most.
+
+   `data-tip`, not `title`. The native tooltip appears after about a second, in
+   the OS font, and never on keyboard focus — three reasons it is no use for
+   telling someone what a button does.
+
+   Delegated from `document`, so every row rendered later (shares, devices,
+   transfers, sessions) is covered by writing one attribute in its template. */
+
+const TOOLTIP_DELAY_MS = 320;
+/// Distance between the control and the bubble, and the minimum gap kept from
+/// the window edge.
+const TOOLTIP_GAP = 8;
+
+let tooltipEl = null;
+let tooltipTimer = null;
+/// The control the tip belongs to, whether already shown or still pending. Kept
+/// so that moving the pointer within one button does not restart the delay
+/// forever — which is the classic way a delayed tooltip never appears at all.
+let tooltipFor = null;
+/// The text on screen right now, "" when nothing is shown. Used to re-anchor
+/// silently when a list re-renders the very element being explained.
+let tooltipText = "";
+
+function tooltipHost() {
+  if (!tooltipEl) {
+    tooltipEl = document.createElement("div");
+    tooltipEl.className = "tooltip";
+    // Purely visual. Every control it explains already carries its own
+    // accessible name, and announcing this too would just say it twice.
+    tooltipEl.setAttribute("aria-hidden", "true");
+    document.body.appendChild(tooltipEl);
+  }
+  return tooltipEl;
+}
+
+function hideTooltip() {
+  if (tooltipTimer) clearTimeout(tooltipTimer);
+  tooltipTimer = null;
+  tooltipFor = null;
+  tooltipText = "";
+  if (tooltipEl) tooltipEl.classList.remove("is-visible");
+}
+
+function showTooltip(target) {
+  const text = target.dataset.tip;
+  // A row can be re-rendered out from under a pending timer.
+  if (!text || !target.isConnected) return hideTooltip();
+
+  tooltipFor = target;
+  tooltipText = text;
+  const host = tooltipHost();
+  host.textContent = text;
+  host.classList.add("is-visible");
+
+  // Measure after the text is in, or the first tip of a session is placed
+  // using the previous one's size.
+  const anchor = target.getBoundingClientRect();
+  const bubble = host.getBoundingClientRect();
+
+  // Above by preference; below when the control is near the top of the window.
+  let top = anchor.top - bubble.height - TOOLTIP_GAP;
+  if (top < TOOLTIP_GAP) top = anchor.bottom + TOOLTIP_GAP;
+
+  let left = anchor.left + anchor.width / 2 - bubble.width / 2;
+  const rightLimit = window.innerWidth - bubble.width - TOOLTIP_GAP;
+  left = Math.max(TOOLTIP_GAP, Math.min(left, Math.max(TOOLTIP_GAP, rightLimit)));
+
+  host.style.top = Math.round(top) + "px";
+  host.style.left = Math.round(left) + "px";
+}
+
+/// The nearest ancestor carrying a tip, or null. Guarded because a bubbling
+/// event's target is not always an element.
+function tipTargetFrom(node) {
+  return node && node.closest ? node.closest("[data-tip]") : null;
+}
+
+/// `:focus-visible` is what separates "tabbed to" from "clicked on". A webview
+/// too old to know the selector throws rather than returning false, and losing
+/// every keyboard tip is worse than an occasional flash under a click.
+function isKeyboardFocus(node) {
+  try {
+    return node.matches(":focus-visible");
+  } catch (_err) {
+    return true;
+  }
+}
+
+function wireTooltips() {
+  document.addEventListener("mouseover", (event) => {
+    const target = tipTargetFrom(event.target);
+    if (!target || target === tooltipFor) return;
+
+    // The device and transfer lists re-render every 1.5 s, replacing the very
+    // element under a stationary pointer. Same words, same place: re-anchor
+    // silently. Hiding and re-timing it would blink once per refresh.
+    if (tooltipText && target.dataset.tip === tooltipText) {
+      showTooltip(target);
+      return;
+    }
+
+    hideTooltip();
+    tooltipFor = target;
+    // The delay is what keeps tips out of the way while the pointer is merely
+    // crossing a toolbar. They should answer a question, not shout.
+    tooltipTimer = setTimeout(() => showTooltip(target), TOOLTIP_DELAY_MS);
+  });
+
+  document.addEventListener("mouseout", (event) => {
+    const from = tipTargetFrom(event.target);
+    if (!from) return;
+    // Moving from a button onto its own icon is not leaving the button.
+    if (tipTargetFrom(event.relatedTarget) === from) return;
+    hideTooltip();
+  });
+
+  // Keyboard: a tip that only answers to the mouse is invisible to anyone
+  // tabbing through. Focus is deliberate, so it skips the delay.
+  document.addEventListener("focusin", (event) => {
+    const target = tipTargetFrom(event.target);
+    if (!target) return;
+    // Keyboard focus only. A click focuses too, and flashing the tip under the
+    // cursor mid-click is noise.
+    if (!isKeyboardFocus(event.target)) return;
+    showTooltip(target);
+  });
+  document.addEventListener("focusout", hideTooltip);
+
+  // A tip must not outlive what it points at. Capture phase, because the click
+  // handler underneath usually re-renders the row and takes the element away.
+  document.addEventListener("click", hideTooltip, true);
+  document.addEventListener("scroll", hideTooltip, true);
+  window.addEventListener("resize", hideTooltip);
+  window.addEventListener("blur", hideTooltip);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideTooltip();
   });
 }

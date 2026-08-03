@@ -1133,32 +1133,43 @@ pub(crate) fn set_device_name(
     })
 }
 
+/// Make this device visible or invisible to the rest of the network.
+///
+/// Returns whether the server had to be restarted, so the UI can say so.
 #[tauri::command]
 pub(crate) fn set_discoverable(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<bool, String> {
-    // Turning discovery OFF takes effect on the announce loop's next tick,
-    // because it reads the flag live. Turning it back ON needs a restart: the
-    // UDP socket is bound alongside the TCP listener, and there is none to
-    // announce from. Report which happened rather than silently doing nothing.
     let was_running = server::is_running(&state);
-    let had_socket = state
-        .settings
-        .read()
-        .map(|s| s.discoverable && s.peering_enabled)
-        .unwrap_or(false);
+    // Whether the socket is really there, NOT what the config flag says. The
+    // socket survives a flip to invisible, so flipping back on normally needs
+    // nothing but a poke -- restarting on the flag's say-so tore down every
+    // in-flight download for no reason. A restart is left as the one repair
+    // for a socket that genuinely is not bound, which is the bind-failed case.
+    let has_socket = state.discovery_bound.load(Ordering::Relaxed);
 
     mutate_config(&app, &state, |config| {
         config.discoverable = enabled;
         Ok(())
     })?;
 
-    if enabled && was_running && !had_socket {
+    if enabled && was_running && !has_socket {
         server::restart_server_impl(&app, &state).map_err(|e| e.to_string())?;
         return Ok(true);
     }
+
+    if enabled {
+        // Re-arm the inbound-path heuristic: it works by hearing our own
+        // beacon, and we have not sent one while hidden. Without this the
+        // Devices page would cry "firewall" the instant visibility came back.
+        state
+            .discovery_started_ms
+            .store(utils::now_ms(), Ordering::Relaxed);
+    }
+    // Announce (or say goodbye) now rather than up to five seconds from now.
+    state.discovery_wake.notify_one();
     Ok(false)
 }
 
@@ -1225,6 +1236,8 @@ pub(crate) fn list_discovered(state: State<'_, AppState>) -> DiscoveryStatus {
     });
 
     let error = state.discovery_error.lock().ok().and_then(|e| e.clone());
+    // The health heuristic listens for our own beacon, so it only says
+    // anything while we are actually announcing.
     let health = if !running || !discoverable {
         "ok".to_string()
     } else if error.is_some() {
@@ -1235,6 +1248,8 @@ pub(crate) fn list_discovered(state: State<'_, AppState>) -> DiscoveryStatus {
 
     DiscoveryStatus {
         running: running && discoverable && error.is_none(),
+        // Bound means we can hear others, which stays true while hidden.
+        listening: running && state.discovery_bound.load(Ordering::Relaxed),
         port,
         health,
         error,

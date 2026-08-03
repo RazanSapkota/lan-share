@@ -36,14 +36,17 @@
             </div>
           </div>
           <div class="header-right">
-            <span id="header-status" class="pill pill-off">
+            <span id="header-status" class="pill pill-off"
+                  data-tip="Whether the server is running. While it is stopped, nobody on the network can reach anything you share.">
               <span class="pill-dot"></span><span id="header-status-text">Stopped</span>
             </span>
-            <button id="console-toggle" class="icon-text-button" type="button">
+            <button id="console-toggle" class="icon-text-button" type="button"
+                    data-tip="Show this app's own log: every action, error and server event since it opened.">
               <span class="material-symbols-outlined">terminal</span>
               <span>Console</span>
             </button>
-            <button id="theme-toggle" class="icon-button" type="button" aria-label="Change theme">
+            <button id="theme-toggle" class="icon-button" type="button" aria-label="Change theme"
+                    data-tip="Open Settings to change the colour theme of this window.">
               <span class="material-symbols-outlined">palette</span>
             </button>
           </div>
@@ -54,7 +57,8 @@
         <!-- =========================== Sidebar =========================== -->
         <aside class="app-sidebar" id="app-sidebar">
           <div class="sidebar-top">
-            <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Toggle sidebar">
+            <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Toggle sidebar"
+                    data-tip="Shrink the sidebar to icons, for more room on the page.">
               <span class="material-symbols-outlined" id="sidebar-toggle-icon">menu_open</span>
             </button>
             <nav class="sidebar-nav">
@@ -101,13 +105,15 @@
             <!-- Power -->
             <article class="card">
               <div class="power-card">
-                <button id="power-toggle" class="power-toggle" type="button" aria-label="Start or stop the server" aria-pressed="false"></button>
+                <button id="power-toggle" class="power-toggle" type="button" aria-label="Start or stop the server" aria-pressed="false"
+                        data-tip="Start or stop sharing. Windows may ask to allow the app through the firewall the first time — tick Private."></button>
                 <div class="power-label">
                   <span class="power-title" id="power-title">Server stopped</span>
                   <span class="power-sub" id="power-sub">Add a folder, then switch this on.</span>
                 </div>
                 <div class="inline-actions">
-                  <button id="open-browser-btn" class="ghost-button" type="button" disabled>
+                  <button id="open-browser-btn" class="ghost-button" type="button" disabled
+                          data-tip="Open the share page in your own browser, to see exactly what a visitor sees.">
                     <span class="material-symbols-outlined">open_in_new</span>
                     <span>Open in browser</span>
                   </button>
@@ -130,24 +136,30 @@
               <div class="connect-grid">
                 <div class="url-block">
                   <div class="url-row">
-                    <span class="url-text" id="lan-url">—</span>
-                    <button id="copy-url-btn" class="icon-button" type="button" aria-label="Copy address" disabled>
+                    <span class="url-text" id="lan-url"
+                          data-tip="Type this into a browser on any phone or laptop on the same Wi-Fi.">—</span>
+                    <button id="copy-url-btn" class="icon-button" type="button" aria-label="Copy address" disabled
+                            data-tip="Copy this address to the clipboard.">
                       <span class="material-symbols-outlined">content_copy</span>
                     </button>
                   </div>
 
                   <div class="url-meta">
                     <label for="iface-select" class="text-dim">Network</label>
-                    <select id="iface-select" class="iface-select"></select>
+                    <select id="iface-select" class="iface-select"
+                            data-tip="Which network adapter's address to hand out. If a phone can't connect, try the Wi-Fi one rather than a virtual adapter."></select>
                   </div>
 
                   <div class="pin-block" id="pin-block">
                     <span class="pin-block-label">PIN</span>
-                    <span class="pin-value is-masked" id="pin-value">••••••</span>
-                    <button id="pin-reveal-btn" class="icon-button" type="button" aria-label="Show PIN">
+                    <span class="pin-value is-masked" id="pin-value"
+                          data-tip="Visitors type this once per device before they see anything.">••••••</span>
+                    <button id="pin-reveal-btn" class="icon-button" type="button" aria-label="Show PIN"
+                            data-tip="Show or hide the PIN, so it isn't on screen while someone is looking.">
                       <span class="material-symbols-outlined">visibility</span>
                     </button>
-                    <button id="pin-regen-btn" class="icon-button" type="button" aria-label="Generate a new PIN">
+                    <button id="pin-regen-btn" class="icon-button" type="button" aria-label="Generate a new PIN"
+                            data-tip="Pick a new PIN. Devices already signed in stay signed in; anyone joining from now on needs the new one.">
                       <span class="material-symbols-outlined">refresh</span>
                     </button>
                   </div>
@@ -162,7 +174,8 @@
                 </div>
 
                 <div class="qr-block">
-                  <div class="qr-frame hidden" id="qr-frame"></div>
+                  <div class="qr-frame hidden" id="qr-frame"
+                       data-tip="Point a phone's camera at this. It opens the address above — the phone still has to enter the PIN."></div>
                   <div class="qr-empty" id="qr-empty">
                     <span class="material-symbols-outlined">qr_code_2</span>
                     <span>Start the server to show a QR code</span>
@@ -174,28 +187,28 @@
 
             <!-- Live counters -->
             <div class="stat-grid">
-              <div class="stat-card">
+              <div class="stat-card" data-tip="How many shares are switched on right now.">
                 <div class="stat-icon"><span class="material-symbols-outlined">folder_shared</span></div>
                 <div class="stat-body">
                   <div class="stat-label">Shares</div>
                   <div class="stat-value" id="stat-shares">0</div>
                 </div>
               </div>
-              <div class="stat-card">
+              <div class="stat-card" data-tip="Bytes actually sent to visitors since the app opened. An abandoned download counts only what left the machine.">
                 <div class="stat-icon"><span class="material-symbols-outlined">swap_vert</span></div>
                 <div class="stat-body">
                   <div class="stat-label">Data served</div>
                   <div class="stat-value" id="stat-bytes">0.0 B</div>
                 </div>
               </div>
-              <div class="stat-card">
+              <div class="stat-card" data-tip="Browsers currently signed in with the PIN or a share link. Sign them out under Settings → Who can connect.">
                 <div class="stat-icon"><span class="material-symbols-outlined">devices</span></div>
                 <div class="stat-body">
                   <div class="stat-label">Connected</div>
                   <div class="stat-value" id="stat-sessions">0</div>
                 </div>
               </div>
-              <div class="stat-card">
+              <div class="stat-card" data-tip="How long the server has been running. Resets every time you switch it off.">
                 <div class="stat-icon"><span class="material-symbols-outlined">schedule</span></div>
                 <div class="stat-body">
                   <div class="stat-label">Uptime</div>
@@ -224,11 +237,13 @@
 
           <article class="card shares-table-card">
             <div class="shares-toolbar">
-              <button id="add-folder-btn" class="primary-button" type="button">
+              <button id="add-folder-btn" class="primary-button" type="button"
+                      data-tip="Pick a folder on this PC to share. Nothing is copied or moved — it is served from where it sits.">
                 <span class="material-symbols-outlined">create_new_folder</span>
                 <span>Add folder</span>
               </button>
-              <button id="add-files-btn" class="ghost-button" type="button">
+              <button id="add-files-btn" class="ghost-button" type="button"
+                      data-tip="Share a few individual files instead of a whole folder. Everything else beside them stays private.">
                 <span class="material-symbols-outlined">note_add</span>
                 <span>Add files</span>
               </button>
@@ -236,7 +251,8 @@
               <span class="spacer"></span>
               <div class="input-with-icon shares-search">
                 <span class="material-symbols-outlined input-leading-icon">search</span>
-                <input id="shares-filter" type="search" placeholder="Filter shares" />
+                <input id="shares-filter" type="search" placeholder="Filter shares"
+                       data-tip="Narrow the list below by name or folder path. It does not change what is shared." />
               </div>
             </div>
 
@@ -244,12 +260,12 @@
               <table class="shares-table">
                 <thead>
                   <tr>
-                    <th>On</th>
-                    <th>Name</th>
-                    <th>Location</th>
-                    <th class="sh-cell-num">Contents</th>
-                    <th>Secret link</th>
-                    <th>Status</th>
+                    <th data-tip="Switch a share off to hide it without removing it. Its secret link stops working too.">On</th>
+                    <th data-tip="What visitors see this share called. Rename it under the tune icon.">Name</th>
+                    <th data-tip="The real folder on this PC. Files are read live from here, never copied.">Location</th>
+                    <th class="sh-cell-num" data-tip="File count and total size, once you have pressed the calculator icon.">Contents</th>
+                    <th data-tip="A private link that opens just this share, without the PIN. Handy for sending one folder to one person.">Secret link</th>
+                    <th data-tip="Whether the folder still exists on disk and is being served.">Status</th>
                     <th class="sh-cell-actions">Actions</th>
                   </tr>
                 </thead>
@@ -274,23 +290,41 @@
                 <div class="self-body">
                   <div class="self-row">
                     <input id="self-name" class="self-name" type="text" maxlength="48"
-                           aria-label="This device's name" />
-                    <button id="self-name-save" class="ghost-button" type="button">Rename</button>
+                           aria-label="This device's name"
+                           data-tip="What this computer calls itself on the network. Other devices show this name in their list." />
+                    <button id="self-name-save" class="ghost-button" type="button"
+                            data-tip="Save the name above. Other devices pick it up within a few seconds.">Rename</button>
                   </div>
                   <div class="self-meta">
                     <span id="self-addr" class="mono text-dim"></span>
                   </div>
                 </div>
-                <label class="check-row self-visible">
-                  <input type="checkbox" id="self-discoverable" />
-                  <span>Visible to other devices</span>
-                </label>
+                <span id="visibility-pill" class="pill pill-off self-visible"
+                      data-tip="Whether this device is actually announcing itself right now. It can read Hidden even with the switch on — for instance while the server is stopped.">
+                  <span class="pill-dot"></span><span id="visibility-pill-text">Hidden</span>
+                </span>
               </div>
+
+              <!-- Visibility: the same switch the Dashboard uses for the server,
+                   because it is the same kind of decision — on or off, right now. -->
+              <div class="power-card visibility-card">
+                <button id="visibility-toggle" class="power-toggle" type="button"
+                        aria-label="Make this device visible or hidden to other devices"
+                        aria-pressed="false"
+                        data-tip="Announce this device to the network, or go quiet. Hidden still sees everyone else, and devices you have already paired with can still reach you."></button>
+                <div class="power-label">
+                  <span class="power-title" id="visibility-title">Hidden</span>
+                  <span class="power-sub" id="visibility-sub">Other devices can't see this one.</span>
+                </div>
+              </div>
+
               <div class="self-foot">
                 <span class="material-symbols-outlined">folder</span>
                 <span class="text-muted">Files people send me go to</span>
-                <span id="self-receive" class="mono text-dim"></span>
-                <button id="self-receive-pick" class="ghost-button" type="button">Change</button>
+                <span id="self-receive" class="mono text-dim"
+                      data-tip="Where files sent by a paired device are saved. Nothing here is ever overwritten — a duplicate name becomes “photo (2).jpg”."></span>
+                <button id="self-receive-pick" class="ghost-button" type="button"
+                        data-tip="Choose a different folder for incoming files.">Change</button>
               </div>
             </article>
 
@@ -309,7 +343,8 @@
                 <span class="material-symbols-outlined" style="color:var(--text-dim)">smartphone</span>
                 <h3>Send to a phone</h3>
                 <span class="spacer"></span>
-                <button id="handoff-pick" class="ghost-button" type="button">
+                <button id="handoff-pick" class="ghost-button" type="button"
+                        data-tip="Pick files for a phone. You get a QR code and a one-hour link that opens only those files — no PIN, no pairing.">
                   <span class="material-symbols-outlined">attach_file</span>
                   <span>Pick files</span>
                 </button>
@@ -326,11 +361,13 @@
             <!-- Nearby -->
             <article class="card">
               <div class="card-head device-card-head">
-                <span class="radar" id="radar" aria-hidden="true"></span>
-                <h3>Nearby devices</h3>
+                <span class="radar" id="radar" aria-hidden="true"
+                      data-tip="Sweeping means this device is listening for others. It keeps sweeping while you are hidden."></span>
+                <h3 data-tip="Other computers running LAN Share on this Wi-Fi. They appear within about five seconds of starting up.">Nearby devices</h3>
                 <span class="count-pill" id="nearby-count">0</span>
                 <span class="spacer"></span>
-                <button id="add-ip-btn" class="ghost-button" type="button">
+                <button id="add-ip-btn" class="ghost-button" type="button"
+                        data-tip="Type a device's address by hand, for networks that block the automatic discovery message.">
                   <span class="material-symbols-outlined">add</span>
                   <span>Add by address</span>
                 </button>
@@ -341,7 +378,7 @@
             <!-- Paired -->
             <article class="card">
               <div class="card-head">
-                <h3>My devices</h3>
+                <h3 data-tip="Devices you have paired with. They can send you files and browse your shares without the PIN, and the list survives restarts.">My devices</h3>
                 <span class="count-pill" id="paired-count">0</span>
               </div>
               <div id="paired-list" class="device-list"></div>
@@ -350,10 +387,11 @@
             <!-- Transfers -->
             <article class="card" id="transfers-card">
               <div class="card-head">
-                <h3>Transfers</h3>
+                <h3 data-tip="Files moving to or from a paired device, in both directions, with live speed and progress.">Transfers</h3>
                 <span class="count-pill" id="transfers-count">0</span>
                 <span class="spacer"></span>
-                <button id="transfers-clear" class="ghost-button" type="button">
+                <button id="transfers-clear" class="ghost-button" type="button"
+                        data-tip="Tidy the list: removes finished, failed and cancelled rows. Anything still running stays.">
                   <span class="material-symbols-outlined">clear_all</span>
                   <span>Clear finished</span>
                 </button>
@@ -372,12 +410,15 @@
 
           <article class="card">
             <div class="preview-bar">
-              <select id="preview-share" class="iface-select"></select>
-              <button id="preview-reload" class="ghost-button" type="button">
+              <select id="preview-share" class="iface-select"
+                      data-tip="Which share to look at through a visitor's eyes."></select>
+              <button id="preview-reload" class="ghost-button" type="button"
+                      data-tip="Reload the preview after adding files or changing what this share exposes.">
                 <span class="material-symbols-outlined">refresh</span>
                 <span>Reload</span>
               </button>
-              <span class="preview-url" id="preview-url"></span>
+              <span class="preview-url" id="preview-url"
+                    data-tip="The real link this preview is loaded from — the same one a visitor would use."></span>
             </div>
             <div class="preview-frame-wrap hidden" id="preview-frame-wrap">
               <iframe class="preview-frame" id="preview-frame" title="Receiver preview"></iframe>
@@ -398,18 +439,23 @@
           <article class="card activity-table-card">
             <div class="shares-toolbar">
               <div class="mode-switch" id="activity-filter" role="tablist">
-                <button class="mode-button active" type="button" data-filter="all">All</button>
-                <button class="mode-button" type="button" data-filter="download">Transfers</button>
-                <button class="mode-button" type="button" data-filter="auth">Access</button>
-                <button class="mode-button" type="button" data-filter="denied">Denied</button>
+                <button class="mode-button active" type="button" data-filter="all"
+                        data-tip="Every event.">All</button>
+                <button class="mode-button" type="button" data-filter="download"
+                        data-tip="Files viewed, downloaded and uploaded.">Transfers</button>
+                <button class="mode-button" type="button" data-filter="auth"
+                        data-tip="Sign-ins and folder listings — who arrived and what they looked at.">Access</button>
+                <button class="mode-button" type="button" data-filter="denied"
+                        data-tip="Refused requests: wrong PIN, expired link, a path that tried to escape its share.">Denied</button>
               </div>
               <span class="count-pill" id="activity-count">0 events</span>
               <span class="spacer"></span>
-              <label class="check-row">
+              <label class="check-row" data-tip="Keep pulling new events every second or so. Turn off to read the list without it moving.">
                 <input type="checkbox" id="activity-auto" checked />
                 <span>Auto-refresh</span>
               </label>
-              <button id="activity-clear" class="ghost-button" type="button">
+              <button id="activity-clear" class="ghost-button" type="button"
+                      data-tip="Empty the log. It lives in memory only, so it clears itself when the app closes anyway.">
                 <span class="material-symbols-outlined">delete_sweep</span>
                 <span>Clear</span>
               </button>
@@ -420,11 +466,11 @@
                 <thead>
                   <tr>
                     <th>Time</th>
-                    <th>Device</th>
-                    <th>Action</th>
-                    <th>File</th>
-                    <th class="act-bytes">Bytes</th>
-                    <th>Status</th>
+                    <th data-tip="The visitor's address on this network, and what browser they used.">Device</th>
+                    <th data-tip="What they did: signed in, listed a folder, viewed, downloaded or uploaded.">Action</th>
+                    <th data-tip="Which share and path it happened in.">File</th>
+                    <th class="act-bytes" data-tip="Bytes that actually reached them. A number short of the file size means the transfer was cut off.">Bytes</th>
+                    <th data-tip="Finished, aborted mid-stream, or refused.">Status</th>
                   </tr>
                 </thead>
                 <tbody id="activity-tbody" aria-live="polite" aria-relevant="additions"></tbody>
@@ -456,18 +502,21 @@
                 <div class="path-grid">
                   <div class="path-row">
                     <label class="path-label" for="set-port">Port</label>
-                    <input id="set-port" type="text" inputmode="numeric" />
+                    <input id="set-port" type="text" inputmode="numeric"
+                           data-tip="The number after the colon in the address. Changing it restarts the server, and the address and QR code follow automatically." />
                   </div>
                   <div class="path-row">
                     <label class="path-label" for="set-bind">Listen on</label>
-                    <select id="set-bind" class="iface-select" style="max-width:none">
+                    <select id="set-bind" class="iface-select" style="max-width:none"
+                            data-tip="All networks is what lets phones and laptops reach you. This computer only makes the server unreachable from anywhere else — useful for testing.">
                       <option value="0.0.0.0">All networks (0.0.0.0) — recommended</option>
                       <option value="127.0.0.1">This computer only (127.0.0.1)</option>
                     </select>
                   </div>
                   <div class="path-row">
                     <label class="path-label" for="set-name">Server name</label>
-                    <input id="set-name" type="text" />
+                    <input id="set-name" type="text"
+                           data-tip="The title shown at the top of the page visitors see in their browser." />
                   </div>
                 </div>
                 <div class="settings-toggle-stack">
@@ -541,27 +590,33 @@
                   <div class="path-row">
                     <label class="path-label" for="set-pin">PIN</label>
                     <div class="input-with-button">
-                      <input id="set-pin" type="text" inputmode="numeric" maxlength="12" />
-                      <button id="set-pin-regen" class="ghost-button" type="button">Generate</button>
+                      <input id="set-pin" type="text" inputmode="numeric" maxlength="12"
+                             data-tip="Type your own PIN, or press Generate. Devices already signed in are not affected." />
+                      <button id="set-pin-regen" class="ghost-button" type="button"
+                              data-tip="Pick a random six-digit PIN.">Generate</button>
                     </div>
                   </div>
                   <div class="path-row">
                     <label class="path-label" for="set-attempts">Wrong-PIN attempts before lockout</label>
-                    <input id="set-attempts" type="text" inputmode="numeric" />
+                    <input id="set-attempts" type="text" inputmode="numeric"
+                           data-tip="How many wrong guesses one device gets before it is made to wait. Counted per device, so one fumbling phone cannot lock anyone else out." />
                   </div>
                   <div class="path-row">
                     <label class="path-label" for="set-lockout">Lockout length (seconds)</label>
-                    <input id="set-lockout" type="text" inputmode="numeric" />
+                    <input id="set-lockout" type="text" inputmode="numeric"
+                           data-tip="How long that device has to wait before it may try the PIN again." />
                   </div>
                   <div class="path-row">
                     <label class="path-label" for="set-ttl">Sign-in lasts (hours)</label>
-                    <input id="set-ttl" type="text" inputmode="numeric" />
+                    <input id="set-ttl" type="text" inputmode="numeric"
+                           data-tip="How long a visitor stays signed in before the PIN is asked for again. Stopping the server signs everyone out regardless." />
                   </div>
                 </div>
 
                 <div class="card-head" style="border-top:1px solid var(--line); border-bottom:0; padding-left:0; padding-right:0">
-                  <h3>Connected devices</h3>
-                  <button id="revoke-all-btn" class="ghost-button" type="button">
+                  <h3 data-tip="Browsers currently signed in. Paired devices are not listed here — unpair those on the Devices page.">Connected devices</h3>
+                  <button id="revoke-all-btn" class="ghost-button" type="button"
+                          data-tip="Sign every browser out at once. They need the PIN again; the PIN itself does not change.">
                     <span class="material-symbols-outlined">logout</span>
                     <span>Sign all out</span>
                   </button>
@@ -595,11 +650,13 @@
                 <div class="path-grid">
                   <div class="path-row">
                     <label class="path-label" for="set-inbox">Drop-box folder</label>
-                    <select id="set-inbox" class="iface-select" style="max-width:none"></select>
+                    <select id="set-inbox" class="iface-select" style="max-width:none"
+                            data-tip="The one share that accepts uploads. Every other share stays read-only."></select>
                   </div>
                   <div class="path-row">
                     <label class="path-label" for="set-maxupload">Largest upload (MB)</label>
-                    <input id="set-maxupload" type="text" inputmode="numeric" />
+                    <input id="set-maxupload" type="text" inputmode="numeric"
+                           data-tip="Anything bigger than this is refused before it is written." />
                   </div>
                 </div>
               </div>
@@ -650,24 +707,27 @@
                 <div class="path-grid">
                   <div class="path-row">
                     <label class="path-label" for="set-thumbsize">Thumbnail size (px)</label>
-                    <input id="set-thumbsize" type="text" inputmode="numeric" />
+                    <input id="set-thumbsize" type="text" inputmode="numeric"
+                           data-tip="Longest edge of a generated thumbnail. Bigger looks sharper on a phone and costs more disk in the cache." />
                   </div>
                   <div class="path-row">
                     <label class="path-label" for="set-view">Default view</label>
-                    <select id="set-view" class="iface-select" style="max-width:none">
+                    <select id="set-view" class="iface-select" style="max-width:none"
+                            data-tip="How a folder looks when a visitor first opens it. They can switch it themselves afterwards.">
                       <option value="grid">Gallery</option>
                       <option value="list">List</option>
                     </select>
                   </div>
                 </div>
                 <div class="settings-stats-grid">
-                  <div class="settings-stat">
+                  <div class="settings-stat" data-tip="Disk used by generated thumbnails. They are rebuilt on demand, so deleting them costs nothing but a little time.">
                     <span class="settings-stat-label">Thumbnail cache</span>
                     <span class="settings-stat-value" id="thumb-cache-size">—</span>
                   </div>
                 </div>
                 <div class="inline-actions">
-                  <button id="clear-thumbs-btn" class="ghost-button" type="button">
+                  <button id="clear-thumbs-btn" class="ghost-button" type="button"
+                          data-tip="Delete every cached thumbnail. Your own photos are untouched — only the small copies go.">
                     <span class="material-symbols-outlined">mop</span>
                     <span>Clear thumbnail cache</span>
                   </button>
@@ -697,10 +757,12 @@
         <div class="console-head">
           <span class="console-title">Console</span>
           <div class="console-actions">
-            <button id="console-clear" class="icon-button" type="button" aria-label="Clear log">
+            <button id="console-clear" class="icon-button" type="button" aria-label="Clear log"
+                    data-tip="Empty this log.">
               <span class="material-symbols-outlined">delete</span>
             </button>
-            <button id="console-close" class="icon-button" type="button" aria-label="Close console">
+            <button id="console-close" class="icon-button" type="button" aria-label="Close console"
+                    data-tip="Hide the console. Nothing stops being logged.">
               <span class="material-symbols-outlined">close</span>
             </button>
           </div>
@@ -717,8 +779,10 @@
         <p class="mono text-dim" id="handoff-url" style="word-break:break-all;font-size:11.5px"></p>
         <p class="text-muted" id="handoff-meta"></p>
         <div class="dialog-actions">
-          <button id="handoff-copy" class="ghost-button" type="button">Copy link</button>
-          <button id="handoff-done" class="primary-button" type="button">Done</button>
+          <button id="handoff-copy" class="ghost-button" type="button"
+                  data-tip="Copy the link, to paste into a chat instead of scanning.">Copy link</button>
+          <button id="handoff-done" class="primary-button" type="button"
+                  data-tip="Close this. The link keeps working for an hour — revoke it in the list to cut it off sooner.">Done</button>
         </div>
       </div>
     </div>
@@ -740,7 +804,8 @@
         <p class="pair-message" id="pair-out-message">Waiting for the other device to accept…</p>
         <div class="pair-wait progress-track"><div class="progress-bar is-indeterminate"></div></div>
         <div class="dialog-actions">
-          <button id="pair-out-cancel" class="ghost-button" type="button">Cancel</button>
+          <button id="pair-out-cancel" class="ghost-button" type="button"
+                  data-tip="Call the pairing off. Nothing is remembered on either side.">Cancel</button>
         </div>
       </div>
     </div>
@@ -767,8 +832,10 @@
           The name above is what that device calls itself and has not been verified. The address is.
         </p>
         <div class="dialog-actions">
-          <button id="pair-in-reject" class="ghost-button" type="button">Reject</button>
-          <button id="pair-in-accept" class="primary-button" type="button" disabled>Accept</button>
+          <button id="pair-in-reject" class="ghost-button" type="button"
+                  data-tip="Refuse. Nothing is stored and the other device is told plainly.">Reject</button>
+          <button id="pair-in-accept" class="primary-button" type="button" disabled
+                  data-tip="Only if the digits match the other screen. From then on that device can send you files and browse your shares without the PIN.">Accept</button>
         </div>
       </div>
     </div>
@@ -794,8 +861,10 @@
           </span>
         </label>
         <div class="dialog-actions">
-          <button id="offer-decline" class="ghost-button" type="button">Decline</button>
-          <button id="offer-accept" class="primary-button" type="button">Accept</button>
+          <button id="offer-decline" class="ghost-button" type="button"
+                  data-tip="Refuse the files. Not a byte is written to disk.">Decline</button>
+          <button id="offer-accept" class="primary-button" type="button"
+                  data-tip="Start receiving. Files land in the folder shown above and nothing there is overwritten.">Accept</button>
         </div>
       </div>
     </div>
@@ -811,13 +880,15 @@
         <div class="path-grid" style="margin-top:12px">
           <div class="path-row">
             <label class="path-label" for="addip-input">Address</label>
-            <input id="addip-input" type="text" placeholder="192.168.1.42" />
+            <input id="addip-input" type="text" placeholder="192.168.1.42"
+                   data-tip="Just the address, no http:// — add :port only if that device is not on the usual one." />
           </div>
         </div>
         <p class="pair-message" id="addip-error"></p>
         <div class="dialog-actions">
           <button id="addip-cancel" class="ghost-button" type="button">Cancel</button>
-          <button id="addip-ok" class="primary-button" type="button">Look for it</button>
+          <button id="addip-ok" class="primary-button" type="button"
+                  data-tip="Contact that address now. If it answers, the device joins the Nearby list ready to pair.">Look for it</button>
         </div>
       </div>
     </div>
@@ -827,7 +898,8 @@
       <div class="dialog-card browse-card" role="dialog" aria-modal="true" aria-labelledby="browse-title">
         <h3 id="browse-title">Browsing <span id="browse-peer"></span></h3>
         <div class="browse-bar">
-          <button id="browse-up" class="ghost-button" type="button">
+          <button id="browse-up" class="ghost-button" type="button"
+                  data-tip="Up one folder, and from the top back to the list of that device's shares.">
             <span class="material-symbols-outlined">arrow_back</span>
             <span>Back</span>
           </button>
@@ -847,11 +919,13 @@
         <div class="path-grid" style="margin:12px 0">
           <div class="path-row">
             <label class="path-label" for="share-edit-name">Display name</label>
-            <input id="share-edit-name" type="text" />
+            <input id="share-edit-name" type="text"
+                   data-tip="What visitors see this folder called. The folder on disk is not renamed." />
           </div>
           <div class="path-row">
             <label class="path-label" for="share-edit-note">Note (optional)</label>
-            <input id="share-edit-note" type="text" />
+            <input id="share-edit-note" type="text"
+                   data-tip="A reminder for yourself. Only shown in this app." />
           </div>
         </div>
         <div class="settings-toggle-stack">
@@ -869,11 +943,13 @@
         <div class="path-grid" style="margin-top:12px">
           <div class="path-row">
             <label class="path-label" for="share-edit-include">Only these file types (comma separated, blank = all)</label>
-            <input id="share-edit-include" type="text" placeholder="jpg, mp4, pdf" />
+            <input id="share-edit-include" type="text" placeholder="jpg, mp4, pdf"
+                   data-tip="Show only these extensions. Everything else in the folder becomes invisible and cannot be downloaded." />
           </div>
           <div class="path-row">
             <label class="path-label" for="share-edit-exclude">Never share these types</label>
-            <input id="share-edit-exclude" type="text" placeholder="exe, dll" />
+            <input id="share-edit-exclude" type="text" placeholder="exe, dll"
+                   data-tip="Hide these extensions even when the list above is blank." />
           </div>
         </div>
         <div class="dialog-actions">

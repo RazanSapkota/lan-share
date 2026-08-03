@@ -13,6 +13,9 @@ Tauri v2, vanilla HTML/CSS/JS, **no bundler and no npm dependencies**.
 
 - **Find other devices on the network automatically**, the way Bluetooth lists
   nearby ones. Pair once per device; the list survives restarts.
+- **One switch to go visible or hidden**, the same switch the server has. Hidden
+  stops the beacon and nothing else: you still see everyone, and devices you
+  have already paired with can still reach you.
 - **Send files straight to a paired device**, and browse or pull from theirs.
 - **Share folders or individual files.** Each share gets its own secret link, so
   you can hand out one folder without exposing the rest.
@@ -38,6 +41,11 @@ After that each can send files to the other (with an Accept prompt, or silently
 if you flip *always accept* for that device) and browse the other's shares
 without a PIN.
 
+**Devices → the visibility switch** takes you off the network's radar without
+stopping anything else. It is deliberately the same control as the server's
+power switch, and it reads the same way: a title that says what is true now, a
+pill that says whether anything is actually being announced.
+
 **Phones can't be peers** — there is no desktop binary for them. They keep the
 browser flow, and **Send to a phone** bridges the gap: pick files, and the app
 mints a short-lived link plus a QR code the phone can scan.
@@ -47,7 +55,7 @@ mints a short-lived link plus a QR code the phone can scan.
 ```sh
 npm run tauri:dev      # cargo run --manifest-path src-tauri/Cargo.toml
 npm run tauri:build    # release build
-npm test               # cargo test  (158 tests)
+npm test               # cargo test  (163 tests)
 ```
 
 There is no frontend build step — `ui/` is served straight from disk by Tauri,
@@ -130,6 +138,27 @@ for — not silently at launch. Discovery is UDP, and Windows prompts **per
 protocol**, so expect a second dialog; the socket is bound next to the TCP one
 precisely so both land in the same gesture. Denying it leaves file sharing
 working and falls back to **Add by address**.
+
+**Every control explains itself on hover.** Anything with a `data-tip`
+attribute gets a tooltip, delegated from `document` and drawn into one element
+parked on `<body>`. Not `title`: the native tooltip takes about a second, comes
+in the OS font, and never appears for someone tabbing with a keyboard. Not a
+CSS `::after` either — half these buttons sit inside the shares table and the
+dialogs, which scroll and therefore clip, so a pseudo-element tip would be cut
+off exactly where it is needed. The delegation is what makes a tip on a
+rendered row a one-attribute change. The receiver UI keeps plain `title`
+attributes instead: phones have no hover, and it ships no JS it does not need.
+
+**Hidden is a beacon that stops, not a socket that closes.** The UDP socket is
+bound for as long as the server runs, so going hidden costs nothing and coming
+back needs no restart — an earlier version tied the socket to the flag, which
+made "hidden" mean deaf as well as silent and tore down every in-flight
+download each time someone switched back on. Two details make the switch feel
+instant: flipping it pokes the announce loop instead of waiting up to five
+seconds for its next tick, and switching off sends a **goodbye beacon** rather
+than merely falling silent — silence takes the full twenty-second offline
+threshold to register on the other machine, which reads as a button that did
+nothing.
 
 **Pairing commits before it compares.** The initiator hashes its nonce and sends
 only the hash; the responder replies with its own nonce; the code is derived

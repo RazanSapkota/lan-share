@@ -689,6 +689,10 @@ impl ServerSettings {
             // The discovery socket is bound alongside the TCP listener, so
             // changing its port needs the same teardown.
             || self.discovery_port != other.discovery_port
+            // Peering is what decides whether that socket exists at all.
+            // `discoverable` deliberately does NOT appear here: it only starts
+            // and stops the beacon, which the announce loop reads live.
+            || self.peering_enabled != other.peering_enabled
     }
 
     pub(crate) fn from_config(config: &AppConfig) -> Self {
