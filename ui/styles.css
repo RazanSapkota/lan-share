@@ -1393,17 +1393,23 @@ input[type="text"]:disabled {
   align-items: start;
 }
 
-.settings-section-head {
+/* These five carried a `settings-section-` prefix the markup never used, so
+   none of them matched anything: the tag rendered instead of being hidden, the
+   h2 and the description fell back to browser defaults, and the body had no
+   gap -- which is why an input could end up flush against the card under it. */
+.settings-head {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.settings-section-tag {
+/* The section already says "Server" in its heading; the tag above it was the
+   same word twice. */
+.settings-tag {
   display: none;
 }
 
-.settings-section-title {
+.settings-title-sm {
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -1412,7 +1418,7 @@ input[type="text"]:disabled {
   margin: 0;
 }
 
-.settings-section-desc {
+.settings-desc {
   font-size: 13px;
   color: var(--text-muted);
   line-height: 1.55;
@@ -1420,8 +1426,15 @@ input[type="text"]:disabled {
   max-width: 280px;
 }
 
-.settings-section-body {
+/* Groups of controls -- a `path-grid` of labelled inputs, a stack of toggle
+   cards, the theme swatches. The gap is wider than the 10px inside a path-grid
+   and the 12px between toggle cards, so the groups read as separate things
+   rather than one long list. */
+.settings-body {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 /* Environment path cards ----------------------------------- */
@@ -2431,6 +2444,10 @@ input[type="text"]:disabled {
 }
 .shares-toolbar .spacer { flex: 1 1 auto; }
 
+/* The filter is one control among several on a toolbar, but `.input-with-icon`
+   is `flex: 1 1 auto`, so without a cap it takes every pixel the others leave. */
+.shares-search { flex: 0 1 260px; }
+
 .count-pill {
   padding: 3px 9px;
   border-radius: 999px;
@@ -2440,6 +2457,10 @@ input[type="text"]:disabled {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* Same reason as `.activity-table-card`: the table's corners and its sticky
+   header background are square, and would otherwise overhang the card radius. */
+.shares-table-card { overflow: hidden; }
 
 .shares-table-wrap {
   /* Wide content scrolls inside its own box; the page body must never scroll
