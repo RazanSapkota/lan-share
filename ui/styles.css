@@ -696,20 +696,13 @@ body.sidebar-collapsed .sidebar-user {
   min-width: 0;
 }
 
+/* No plate and no radius behind it: the artwork brings its own rounded frame,
+   and a second one clipped its corners. */
 .brand-mark {
   width: 32px;
   height: 32px;
-  border-radius: var(--radius);
-  background: var(--primary);
-  color: var(--primary-fg);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.brand-mark svg {
-  width: 18px;
-  height: 18px;
+  display: block;
+  flex: none;
 }
 
 .brand-text {

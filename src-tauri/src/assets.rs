@@ -115,19 +115,15 @@ pub(crate) fn manifest_json(device_name: &str) -> String {
     .to_string()
 }
 
-/// The app mark: a folder with two arcs radiating from its top-right corner --
-/// what you share, and who can reach it.
+/// The app mark, cut from `tools/icon-source.png` by `tools/make-icons.mjs`.
 ///
-/// The same geometry the raster icons are cut from; `tools/make-icons.mjs`
-/// draws these exact coordinates. Emerald rather than `currentColor`, because
-/// this one is used as a favicon and a manifest icon, where there is no
-/// inherited colour to take.
-pub(crate) const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path d="M3.5 7.4H8.1L9.5 10.4H12.4A1.7 1.7 0 0 1 14.1 12.1V19.9A1.7 1.7 0 0 1 12.4 21.6H3.5A1.7 1.7 0 0 1 1.8 19.9V9.1A1.7 1.7 0 0 1 3.5 7.4Z" fill="#10b981"/><path d="M18.1 10.4A4 4 0 0 0 14.1 6.4" stroke="#10b981" stroke-width="2.3" stroke-linecap="round"/><path d="M21.1 10.4A7 7 0 0 0 14.1 3.4" stroke="#10b981" stroke-width="2.3" stroke-linecap="round"/></svg>"##;
-
-/// PNG copies of the mark, for the two places an SVG will not do.
+/// A hand-drawn SVG of a folder and two arcs used to be served beside these,
+/// standing in for artwork it did not resemble -- the guest page showed the
+/// glyph while the window showed the real icon. There is one mark now, and it
+/// is a raster, so every place that needs it takes one of these.
 ///
-/// Chrome on Android refuses to offer "Add to Home Screen" for an SVG-only icon
-/// set, and a browser too old for SVG favicons falls back to `/favicon.ico`.
+/// 192 is the manifest's small icon, the guest page's tab icon and the mark on
+/// the PIN screen; one file for the three of them, so it is fetched once.
 pub(crate) const ICON_192_PNG: &[u8] = include_bytes!("../icons/icon-192.png");
 pub(crate) const ICON_512_PNG: &[u8] = include_bytes!("../icons/icon-512.png");
 /// 16 and 32 only -- a kilobyte, rather than the whole multi-size app icon.

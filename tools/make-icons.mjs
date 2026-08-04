@@ -23,6 +23,9 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, "..", "src-tauri", "icons");
+/// The desktop panel's header mark. `ui/` is Tauri's `frontendDist`, so nothing
+/// outside it is reachable from that window -- the file has to live there.
+const UI_OUT = join(HERE, "..", "ui");
 const SOURCE = join(HERE, "icon-source.png");
 
 // ---------------------------------------------------------------------------
@@ -558,8 +561,13 @@ writeFileSync(
   ])
 );
 
-// Manifest icons, and what the guest page uses as its favicon.
+// Manifest icons, and what the guest page uses as its favicon and its PIN-screen
+// mark.
 writeFileSync(join(OUT, "icon-192.png"), png(192, markAt(192)));
 writeFileSync(join(OUT, "icon-512.png"), png(512, markAt(512)));
 
-console.log("wrote icons to", OUT);
+// The desktop header draws this at 32 CSS px; 128 is four times that, so it
+// stays sharp up to a 400% display and still costs less than the 192.
+writeFileSync(join(UI_OUT, "icon.png"), png(128, markAt(128)));
+
+console.log("wrote icons to", OUT, "and the header mark to", UI_OUT);

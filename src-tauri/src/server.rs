@@ -79,9 +79,8 @@ pub(crate) fn build_router(ctx: ServerCtx) -> Router {
         .route("/", get(routes::shell))
         .route("/assets/app.js", get(routes::asset_js))
         .route("/assets/styles.css", get(routes::asset_css))
-        .route("/assets/icon.svg", get(routes::asset_icon))
-        // PNG copies for the manifest: Chrome on Android will not offer to
-        // install a site whose only icon is an SVG.
+        // The app mark: the tab icon, the PIN screen's mark, and the two sizes
+        // the manifest lists.
         .route("/assets/icon-192.png", get(routes::asset_icon_192))
         .route("/assets/icon-512.png", get(routes::asset_icon_512))
         .route("/favicon.ico", get(routes::favicon))

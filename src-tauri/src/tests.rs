@@ -1975,11 +1975,8 @@ fn the_app_mark_is_served_without_a_session() {
     assert_eq!(&body[..4], &[0, 0, 1, 0]);
     assert!(u16::from_le_bytes([body[4], body[5]]) >= 1);
 
-    let (status, headers, body) = fx.get("/assets/icon.svg", None);
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
-    assert!(String::from_utf8_lossy(&body).contains("<svg"));
-
+    // The 192 is also what the PIN screen itself draws, so an unauthenticated
+    // 401 here would leave a broken image on the only screen a visitor sees.
     for uri in ["/assets/icon-192.png", "/assets/icon-512.png"] {
         let (status, headers, body) = fx.get(uri, None);
         assert_eq!(status, StatusCode::OK, "{uri}");
@@ -1988,8 +1985,8 @@ fn the_app_mark_is_served_without_a_session() {
     }
 }
 
-/// A manifest that lists only an SVG does not get an install prompt on Android,
-/// which makes the whole file decorative.
+/// Android will not offer to install a site whose manifest is missing a 192 and
+/// a 512, which makes the whole file decorative.
 #[test]
 fn the_manifest_offers_raster_icons_too() {
     let fx = http_fixture("123456");

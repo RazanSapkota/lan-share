@@ -243,22 +243,12 @@ a { color: var(--primary); text-decoration: none; }
   text-align: center;
 }
 
-/* The app mark, in a filled disc. The SVG is inline in the markup rather than
-   fetched, so the very first screen still makes no image request — the reason
-   this used to be drawn with CSS borders. */
+/* The app mark. No disc behind it: the artwork brings its own rounded frame,
+   and a circle crops the corners off it. */
 .pin-mark {
   width: 56px;
   height: 56px;
   margin: 0 auto 18px;
-  border-radius: 50%;
-  background: var(--primary);
-  color: var(--primary-fg);
-  display: grid;
-  place-items: center;
-}
-.pin-mark svg {
-  width: 30px;
-  height: 30px;
 }
 
 .pin-title { margin: 0 0 4px; font-size: 21px; font-weight: 700; letter-spacing: -0.01em; }

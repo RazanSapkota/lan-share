@@ -183,23 +183,12 @@ pub(crate) async fn asset_css(headers: HeaderMap) -> Response {
     text_asset(body, "text/css; charset=utf-8", etag, &headers)
 }
 
-pub(crate) async fn asset_icon() -> Response {
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "image/svg+xml"),
-            (header::CACHE_CONTROL, "public, max-age=86400"),
-        ],
-        assets::ICON_SVG,
-    )
-        .into_response()
-}
-
-/// The 16/32 `.ico`, for browsers that ignore an SVG favicon.
+/// The 16/32 `.ico`, for browsers that ask for `/favicon.ico` regardless of
+/// what the page's `<link rel="icon">` says.
 ///
 /// This used to answer `204` -- browsers ask for it unprompted, and a 404 per
 /// page load is noise -- but an empty answer means a blank tab icon on anything
-/// that will not take the SVG, which is a poor showing for an app whose whole
+/// that goes looking here first, which is a poor showing for an app whose whole
 /// job is to be opened in someone else's browser.
 pub(crate) async fn favicon() -> Response {
     binary_asset(assets::FAVICON_ICO, "image/x-icon")
@@ -214,7 +203,7 @@ pub(crate) async fn asset_icon_512() -> Response {
 }
 
 /// Baked into the binary and only ever changing with it, so a long cache is
-/// safe -- the same reasoning `asset_icon` uses.
+/// safe -- unlike the templated shell, these bytes cannot vary per request.
 fn binary_asset(body: &'static [u8], mime: &'static str) -> Response {
     (
         StatusCode::OK,

@@ -32,15 +32,10 @@
     <!-- ========================== PIN gate ============================== -->
     <section id="screen-pin" class="screen screen-pin hidden">
       <div class="pin-card">
-        <!-- Inline, not an <img>: this is the first screen, and it has to draw
-             before the browser has fetched anything else. -->
-        <div class="pin-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="M3.5 7.4H8.1L9.5 10.4H12.4A1.7 1.7 0 0 1 14.1 12.1V19.9A1.7 1.7 0 0 1 12.4 21.6H3.5A1.7 1.7 0 0 1 1.8 19.9V9.1A1.7 1.7 0 0 1 3.5 7.4Z" fill="currentColor" />
-            <path d="M18.1 10.4A4 4 0 0 0 14.1 6.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
-            <path d="M21.1 10.4A7 7 0 0 0 14.1 3.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
-          </svg>
-        </div>
+        <!-- The same file the tab icon above points at, so the one fetch serves
+             both. This was an inline glyph to save that fetch, but it was a
+             hand-drawn stand-in for the artwork rather than the artwork. -->
+        <img class="pin-mark" src="/assets/icon-192.png" alt="" width="56" height="56" aria-hidden="true" />
         <!-- The machine's name is the headline, not the product's. This is the
              moment a visitor decides whether they are handing a PIN to the
              right computer, and on a shared Wi-Fi there may be a look-alike. -->

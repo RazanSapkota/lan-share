@@ -21,17 +21,11 @@
         <div class="app-header-inner">
           <div class="header-left">
             <div class="brand">
-              <!-- The app mark: a folder, and two arcs radiating from it. Same
-                   geometry as the window icon (tools/make-icons.mjs), in
-                   currentColor so it follows whichever of the twelve themes is
-                   on. -->
-              <div class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none">
-                  <path d="M3.5 7.4H8.1L9.5 10.4H12.4A1.7 1.7 0 0 1 14.1 12.1V19.9A1.7 1.7 0 0 1 12.4 21.6H3.5A1.7 1.7 0 0 1 1.8 19.9V9.1A1.7 1.7 0 0 1 3.5 7.4Z" fill="currentColor" />
-                  <path d="M18.1 10.4A4 4 0 0 0 14.1 6.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
-                  <path d="M21.1 10.4A7 7 0 0 0 14.1 3.4" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" />
-                </svg>
-              </div>
+              <!-- The app's own artwork, cut from the same source as the window
+                   and taskbar icon by tools/make-icons.mjs. It used to be a
+                   hand-drawn glyph in currentColor, which followed the theme but
+                   was not the icon this app actually ships. -->
+              <img class="brand-mark" src="icon.png" alt="" width="32" height="32" aria-hidden="true" />
               <div class="brand-text">
                 <span class="brand-eyebrow">Local Network File Sharing</span>
                 <span class="brand-title">LAN Share</span>

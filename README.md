@@ -89,7 +89,8 @@ succeeds.
 
 ```
 ui/                        desktop control panel  (frontendDist, Tauri webview)
-tools/make-icons.mjs       the app mark -> png/ico/icns   (run by hand)
+tools/icon-source.png      the artwork every icon is cut from
+tools/make-icons.mjs       that png -> png/ico/icns        (run by hand)
 src-tauri/
   icons/                   window, taskbar, favicon and manifest icons
   web/                     receiver web app       (include_str!'d into the exe)
@@ -137,21 +138,25 @@ no internet access at all — only a route to this host.
 
 ## Notes on a few decisions
 
-**The icons are generated, not drawn.** The mark — a folder with two arcs
-radiating off it — is defined once as coordinates in `tools/make-icons.mjs`,
-which draws it procedurally and writes every PNG, the `.ico` and the `.icns`
-using nothing but Node's `zlib`: PNG, ICO and ICNS are all simple enough
-containers to emit by hand, and that beats adding an image toolchain to a
-project whose whole boast is not having one. The three inline SVG copies (the
-window header, the PIN screen, the favicon) come from `--svg`, so the drawing
-and the icons cannot drift. Sizes at or below 32px drop the outer arc and
-thicken what is left; two thin arcs at 16px are a green smudge.
+**The icons are derived, not committed by hand.** `tools/icon-source.png` is the
+artwork; `tools/make-icons.mjs` cuts every other size from it and writes each
+PNG, the `.ico` and the `.icns` using nothing but Node's `zlib` — PNG, ICO and
+ICNS are all simple enough containers to emit by hand, and that beats adding an
+image toolchain to a project whose whole boast is not having one. Delete
+`src-tauri/icons/` and one command puts it back.
 
-There is no tile behind the mark. A plate inset from the canvas, with the glyph
-inset again inside it, is why this icon used to sit visibly smaller in the
-taskbar than everything beside it — so the mark runs to the edges instead, on
-transparency, and the gradient's dark stop is lifted enough to survive a white
-taskbar as well as a black one.
+The artwork sits 839px inside a 1024 canvas, so the script crops to the alpha
+bounds before scaling — left in, that padding would make every icon sit a size
+smaller than its neighbours in the taskbar. The box filter weights colour by
+alpha rather than averaging samples, because the transparent pixels around the
+artwork are dark and a straight average drags a fringe into every edge.
+
+**There is one mark, and it is that file.** The window header, the PIN screen
+and the tab icon all show it: `ui/icon.png` for the desktop panel (which can
+only read files under `frontendDist`), `/assets/icon-192.png` for the guest
+page, where one fetch serves both the tab and the PIN screen. They used to be
+inline SVG — a hand-drawn folder with two arcs, in `currentColor` so it followed
+the theme — which was quietly a different logo from the one on the taskbar.
 
 The `.ico` carries ten sizes, not the usual handful, because a missing size is
 not a missing icon — the shell scales a neighbour instead, and that upscale is
