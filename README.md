@@ -285,3 +285,10 @@ its issuer.
 
 The Network and Activity shots predate the split into Shares / Devices /
 Network, and there is no Devices shot yet.
+
+## License
+
+[MIT](LICENSE) — do what you like with it, keep the copyright notice, and
+expect no warranty. The Rust crates it builds on keep their own licenses,
+which are overwhelmingly MIT or Apache-2.0; `cargo tree` will list them if you
+need the full picture.

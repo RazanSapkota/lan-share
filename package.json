@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.2.0",
   "description": "Rust + Tauri desktop app that shares media files and folders over the local network",
+  "license": "MIT",
   "scripts": {
     "tauri:dev": "cargo run --manifest-path src-tauri/Cargo.toml",
     "tauri:build": "cargo build --release --manifest-path src-tauri/Cargo.toml",
