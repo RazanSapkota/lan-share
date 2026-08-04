@@ -6,7 +6,7 @@
    Sections:
      1  Runtime handle + constants + state
      2  DOM / format helpers
-     3  Logging + toasts + confirm dialog
+     3  Toasts + confirm dialog
      4  Backend bridge
      5  Config
      6  Theme
@@ -36,7 +36,9 @@ const SERVER_POLL_MS = 1000;
 const ACTIVITY_POLL_MS = 1500;
 const ACTIVITY_LIMIT = 300;
 
-const PAGES = ["dashboard", "shares", "network", "devices", "activity", "settings"];
+// Keys, not labels: `dashboard` is the page labelled Connections and `network`
+// is the one labelled Devices. Each maps to `#{key}-view` in switchPage.
+const PAGES = ["dashboard", "shares", "network", "activity", "settings"];
 
 const THEMES = [
   "light", "dark", "nord", "solarized", "monolith", "amber",
@@ -55,7 +57,6 @@ const state = {
   // Last AppConfig from load_config. Never mutated in place — Settings builds
   // a fresh object on save, so a failed save leaves this copy intact.
   config: null,
-  logs: [],
   booted: false,
 
   server: {
@@ -172,20 +173,8 @@ function parseExtList(value) {
 }
 
 // ============================================================
-// 3  Logging + toasts + confirm dialog
+// 3  Toasts + confirm dialog
 // ============================================================
-
-function addLog(message) {
-  const line = "[" + new Date().toLocaleTimeString(undefined, { hour12: false }) + "] " + message;
-  state.logs.unshift(line);
-  if (state.logs.length > 500) state.logs.length = 500;
-  const body = $("console-body");
-  if (body) {
-    body.innerHTML = state.logs
-      .map((l) => '<div class="log-item">' + escapeHtml(l) + "</div>")
-      .join("");
-  }
-}
 
 const TOAST_ICONS = { info: "info", success: "check_circle", error: "error" };
 
@@ -234,7 +223,6 @@ async function call(command, args) {
     return await invoke(command, args || {});
   } catch (err) {
     const message = typeof err === "string" ? err : err?.message || String(err);
-    addLog(command + " failed: " + message);
     showToast(message, "error");
     throw new Error(message);
   }
@@ -357,7 +345,11 @@ const saveConfig = debounce(async function () {
     const result = await call("save_config", { config: next });
     state.config = next;
     if (result && result.warning) showToast(result.warning, "info");
-    if (result && result.rebound) addLog("Server restarted on port " + result.port);
+    // Auto-port moved the server. Worth saying out loud: every link and QR
+    // code handed out before this points at the old port.
+    if (result && result.rebound) {
+      showToast("Server restarted on port " + result.port, "info");
+    }
     await refreshServerStatus();
     await loadShares();
     // The backend normalizes (clamps ranges, enforces one inbox, backfills
@@ -403,16 +395,16 @@ function renderThemeGrid() {
 /** What to refresh when a page becomes visible. Pages poll only while shown,
  *  so the Activity feed isn't hitting the backend from the Settings page. */
 const PAGE_ENTER = {
+  // Connections. Both halves of the page refresh here: the server side, and
+  // the discovery side that used to be its own page.
   dashboard: () => {
     refreshServerStatus();
     renderDashboard();
-  },
-  shares: () => loadShares(),
-  network: () => enterNetwork(),
-  devices: () => {
     loadIdentity();
     startDevicesTick();
   },
+  shares: () => loadShares(),
+  network: () => enterNetwork(),
   activity: () => {
     startActivityPoll();
     renderActivity();
@@ -435,7 +427,7 @@ function switchPage(page) {
   });
 
   if (target !== "activity") stopActivityPoll();
-  if (target !== "devices") stopDevicesTick();
+  if (target !== "dashboard") stopDevicesTick();
   if (target !== "network") stopNetworkTick();
   const enter = PAGE_ENTER[target];
   if (enter) enter();
@@ -487,7 +479,6 @@ async function toggleServer() {
   try {
     if (state.server.running) {
       await call("stop_server");
-      addLog("Server stopped");
       showToast("Server stopped");
       state.server.lastError = null;
     } else {
@@ -497,7 +488,6 @@ async function toggleServer() {
       }
       await call("start_server");
       state.server.lastError = null;
-      addLog("Server started");
       showToast("Sharing started", "success");
       // The QR encodes the bound port, which auto-port may have changed.
       state.qrCache = {};
@@ -685,7 +675,6 @@ async function addFolderShare() {
   if (!path) return;
   try {
     const view = await call("add_share", { path, name: null });
-    addLog("Added share: " + view.name);
     showToast("Sharing " + view.name, "success");
     await loadShares();
     startShareIndex(view.id);
@@ -699,7 +688,6 @@ async function addFileShares() {
   if (!paths || !paths.length) return;
   try {
     const views = await call("add_shares", { paths });
-    addLog("Added " + formatCount(views.length, "file"));
     showToast("Added " + formatCount(views.length, "file"), "success");
     await loadShares();
   } catch (_err) {
@@ -716,7 +704,6 @@ async function removeShare(shareId, name) {
   if (!ok) return;
   try {
     await call("remove_share", { shareId });
-    addLog("Removed share: " + name);
     await loadShares();
   } catch (_err) {
     /* already reported */
@@ -742,7 +729,6 @@ async function regenerateToken(shareId, name) {
   try {
     await call("regenerate_share_token", { shareId });
     showToast("New link created", "success");
-    addLog("Regenerated the link for " + name);
     await loadShares();
   } catch (_err) {
     /* already reported */
@@ -1039,13 +1025,14 @@ async function startShareIndex(shareId) {
     if (result) {
       state.shares.stats[shareId] = result;
       if (result.skipped) {
-        addLog(
-          "Indexed " + shareId + " — " + result.skipped + " unreadable folder(s) skipped"
+        showToast(
+          formatCount(result.skipped, "unreadable folder") + " skipped while counting",
+          "info"
         );
       }
     }
   } catch (err) {
-    addLog("Could not count files: " + err.message);
+    showToast("Could not count files: " + err.message, "error");
   } finally {
     delete state.shares.indexing[shareId];
     renderSharesTable();
@@ -1228,14 +1215,6 @@ function wire() {
 
   // --- header ---
   $("theme-toggle").addEventListener("click", () => switchPage("settings"));
-  $("console-toggle").addEventListener("click", () =>
-    $("console-drawer").classList.toggle("hidden")
-  );
-  $("console-close").addEventListener("click", () => $("console-drawer").classList.add("hidden"));
-  $("console-clear").addEventListener("click", () => {
-    state.logs = [];
-    $("console-body").innerHTML = "";
-  });
 
   // --- dashboard ---
   $("power-toggle").addEventListener("click", toggleServer);
@@ -1427,7 +1406,6 @@ async function boot() {
   startWatchTick();
 
   state.booted = true;
-  addLog("LAN Share ready");
 }
 
 document.addEventListener("DOMContentLoaded", boot);
@@ -1546,7 +1524,6 @@ async function refreshDevices() {
 
   renderNetworkList();
   renderDiscoveryNotice();
-  renderPresence();
 }
 
 /// Runs on every page, forever. A pairing request is another human waiting on
@@ -1574,27 +1551,6 @@ async function loadIdentity() {
 
   // Do not stomp on the field while it is being edited.
   if (document.activeElement !== $("self-name")) $("self-name").value = identity.name;
-  $("self-addr").textContent = identity.addresses.length
-    ? identity.addresses[0]
-    : "no network";
-  renderPresence();
-}
-
-/// Whether other devices can see this one. Not a control any more -- running
-/// the server IS the consent, so this only reports.
-function renderPresence() {
-  const { running, error } = state.devices.discovery;
-  const pill = $("visibility-pill");
-  pill.classList.toggle("pill-live", running);
-  pill.classList.toggle("pill-warn", !running && !!error);
-  pill.classList.toggle("pill-off", !running && !error);
-  $("visibility-pill-text").textContent = running
-    ? "Visible"
-    : error
-      ? "Discovery failed"
-      : state.server.running
-        ? "Not announcing"
-        : "Server stopped";
 }
 
 // --- discovered ------------------------------------------------------------
@@ -1769,7 +1725,7 @@ function renderNetworkList() {
     let body = "Open LAN Share on another computer on this Wi-Fi and it will appear here.";
     if (!listening && !state.server.running) {
       title = "Discovery is off";
-      body = "Start the server on the Dashboard to look for devices.";
+      body = "Start the server with the switch above to look for devices.";
     } else if (!listening) {
       title = "Discovery is off";
       body = "The discovery socket isn’t running. You can still add a device by address.";
@@ -1875,7 +1831,6 @@ function finishPairing(result, fallbackName) {
   if (status === "accepted") {
     $("pair-out-backdrop").classList.add("hidden");
     showToast("Connected to " + (result.peer_name || fallbackName), "success");
-    addLog("Connected to " + (result.peer_name || fallbackName));
     refreshDevices();
     return;
   }
@@ -1943,7 +1898,6 @@ async function answerIncomingPair(accept) {
     if (accept) {
       const name = await call("accept_pair_request", { pairId });
       showToast("Connected to " + name, "success");
-      addLog("Connected to " + name);
     } else {
       await call("decline_pair_request", { pairId });
     }
@@ -2053,7 +2007,7 @@ function wireDevices() {
   });
 
   // Escape on an incoming request SNOOZES rather than answering: the request
-  // stays pending and re-opens from the Network page. Answering on Escape
+  // stays pending and re-opens from the Connections page. Answering on Escape
   // would make a stray keypress a security decision.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
@@ -2337,7 +2291,7 @@ function renderNetwork() {
     host.innerHTML = netEmpty(
       "devices",
       "No connected devices yet",
-      "Connect to a computer on the Network page and whatever it shares will show up here."
+      "Connect to a computer on the Connections page and whatever it shares will show up here."
     );
     return renderNetSelection();
   }
@@ -2604,7 +2558,6 @@ async function pollNetDownload(taskId) {
       } else {
         const where = (payload.download_result && payload.download_result.path) || "";
         showToast("Saved to " + where, "success");
-        addLog("Downloaded " + row.label + " → " + where);
       }
       renderNetDownloads();
       await callQuiet("clear_task", { taskId });

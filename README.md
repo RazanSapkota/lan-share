@@ -43,8 +43,9 @@ tap **Accept** on the other. Nothing to type — and the matching code is what
 stops a stranger on the same Wi-Fi from impersonating your laptop.
 
 After that each can browse the other's shares without a PIN, from the
-**Devices** page. **Network** does connecting and disconnecting and nothing
-else; **Shares** is what you hand out; **Devices** is what you can reach.
+**Devices** page. **Connections** is where you find machines and connect to or
+disconnect from them; **Shares** is what you hand out; **Devices** is what you
+can reach.
 
 The three buttons map onto Wi-Fi's, because the states really are the same ones:
 **Connect** is the six-digit handshake, **Disconnect** stops traffic both ways
@@ -73,7 +74,7 @@ and `src-tauri/web/` is compiled into the binary with `include_str!`.
 ### First run
 
 1. **Shares** → *Add folder*.
-2. **Dashboard** → flip the switch on.
+2. **Connections** → flip the switch on.
 3. Windows raises a firewall prompt. Tick **Private**, and also **Public** if
    you will use this on a café or hotel network.
 4. Scan the QR code with a phone, or type the address in, then enter the PIN.
@@ -112,17 +113,22 @@ src-tauri/
     utils.rs, tests.rs
 ```
 
-The desktop panel's three peer pages divide by *responsibility*: **Shares** is
-what you hand out, **Devices** is what other devices hand to you and everything
-you do with it, **Network** is only finding them and connecting or
-disconnecting. They were one page once, and it did all three badly.
+The desktop panel divides by *responsibility*: **Connections** is both
+directions of reach — the switch, the link, the QR and the PIN that let phones
+get to you, and below them the list of other machines you can connect to.
+**Shares** is what you hand out. **Devices** is what those machines hand back,
+and everything you do with it. They were one page once, and it did all of it
+badly.
 
-The two peer labels were also the wrong way round for a while: the file browser
-was called Network, which named the wire rather than the job, and left the
-device list looking like it ought to browse. Note that the section ids still
-carry the old sense — `#network-view` is the Devices page and `#devices-view` is
-the Network page — because renaming them would touch the `PAGES` → `#{key}-view`
-routing for no user-visible gain.
+Connecting used to be a page of its own called Network, which named the wire
+rather than the job. It moved onto the Connections page because both halves
+answer the same question — who can reach whom — and because its own list had to
+reach across and read the server's state twice to say anything useful.
+
+Note that the section ids no longer match their labels: `#dashboard-view` is
+the Connections page and `#network-view` is the Devices page. Renaming them
+would touch the `PAGES` → `#{key}-view` routing, and `switchPage` falls back to
+`"dashboard"`, for no gain a user could see.
 
 The **two-frontend split** is the central structural decision: `ui/` is what the
 app window shows, `src-tauri/web/` is what phones see. The receiver UI uses no
@@ -279,12 +285,12 @@ its issuer.
 |---|---|
 | ![](docs/screenshots/desktop-shares.png) | ![](docs/screenshots/desktop-activity.png) |
 
-| Desktop — network | Connection code |
+| Desktop — connections | Connection code |
 |---|---|
 | ![](docs/screenshots/desktop-devices.png) | ![](docs/screenshots/pairing-code.png) |
 
-The Network and Activity shots predate the split into Shares / Devices /
-Network, and there is no Devices shot yet.
+The Activity and device shots predate the split into Connections / Shares /
+Devices, and there is no Devices shot yet.
 
 ## License
 

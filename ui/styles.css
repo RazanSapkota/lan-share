@@ -1233,122 +1233,6 @@ input[type="text"]:disabled {
 
 /* =========================================================
 
-   Console drawer (logs)
-   ========================================================= */
-
-.console-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
-  z-index: 100;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 200ms ease;
-}
-
-.console-overlay.open {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.console-drawer {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 380px;
-  z-index: 110;
-  background: var(--surface);
-  color: var(--text);
-  border-top: 1px solid var(--line);
-  border-radius: 16px 16px 0 0;
-  box-shadow: 0 -16px 40px rgba(0, 0, 0, 0.3);
-  display: flex;
-  flex-direction: column;
-  transform: translateY(100%);
-  transition: transform 280ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.console-drawer.open {
-  transform: translateY(0);
-}
-
-.console-handle {
-  width: 48px;
-  height: 4px;
-  background: var(--line-strong);
-  border-radius: 999px;
-  margin: 10px auto 0;
-  flex: 0 0 auto;
-}
-
-.console-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  flex: 0 0 auto;
-}
-
-.console-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-muted);
-}
-
-.console-title-row .material-symbols-outlined {
-  font-size: 20px;
-}
-
-.console-head h3 {
-  font-size: 13px;
-  color: var(--text);
-}
-
-.console-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.console-status {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--accent-success);
-}
-
-.log-list {
-  padding: 16px 20px;
-  flex: 1 1 auto;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.log-list .detail-empty {
-  padding: 16px;
-  font-family: var(--font-sans);
-}
-
-.log-item {
-  color: var(--text-muted);
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.log-item:first-child {
-  color: var(--text);
-}
-
-/* =========================================================
-
    Dialogs
    ========================================================= */
 
@@ -2328,16 +2212,6 @@ input[type="text"]:disabled {
 .power-title { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
 .power-sub { font-size: 12.5px; color: var(--text-muted); }
 
-/* The visibility switch on the Network page is the same control as the server
-   one, deliberately: both answer "on or off, right now". A notch smaller
-   because it sits inside a card instead of being the page's headline. */
-.visibility-card {
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 14px;
-  padding: 14px 18px 16px;
-  border-top: 1px solid var(--line);
-}
-
 /* --------------------------------------------------------- url + qr hero */
 
 .connect-grid {
@@ -2830,14 +2704,18 @@ input[type="text"]:disabled {
 }
 
 /* =========================================================
-   Network page  (section id `devices-view`: discovery and pairing)
+   Connections page, lower half  (lives in `#dashboard-view`: this device,
+   discovery, and the connect/disconnect list)
    ========================================================= */
 
 /* --------------------------------------------------------- this device */
 
+/* Icon and name. There was a third column holding a "Visible / Hidden" pill,
+   which reported the state of a switch that lived on another page. Both are on
+   this page now, so the pill was restating something a few hundred pixels up. */
 .self-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 14px;
   align-items: center;
   padding: 16px 18px;
@@ -2865,29 +2743,6 @@ input[type="text"]:disabled {
   font-size: 15px;
   font-weight: 600;
   padding: 7px 10px;
-}
-
-.self-meta { font-size: 12px; }
-
-/* The live "Visible / Hidden" read-out. The switch below it is the control;
-   this is the same at-a-glance status the header pill gives the server. */
-.self-visible { flex: none; align-self: center; }
-
-.self-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 12px 18px;
-  border-top: 1px solid var(--line);
-  font-size: 12.5px;
-}
-.self-foot .material-symbols-outlined { font-size: 17px; color: var(--text-dim); }
-.self-foot .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
-
-@media (max-width: 900px) {
-  .self-card { grid-template-columns: auto minmax(0, 1fr); }
-  .self-visible { grid-column: 2; }
 }
 
 /* --------------------------------------------------------- radar */

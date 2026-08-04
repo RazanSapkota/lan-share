@@ -43,11 +43,6 @@
                   data-tip="Whether the server is running. While it is stopped, nobody on the network can reach anything you share.">
               <span class="pill-dot"></span><span id="header-status-text">Stopped</span>
             </span>
-            <button id="console-toggle" class="icon-text-button" type="button"
-                    data-tip="Show this app's own log: every action, error and server event since it opened.">
-              <span class="material-symbols-outlined">terminal</span>
-              <span>Console</span>
-            </button>
             <button id="theme-toggle" class="icon-button" type="button" aria-label="Change theme"
                     data-tip="Open Settings to change the colour theme of this window.">
               <span class="material-symbols-outlined">palette</span>
@@ -65,26 +60,24 @@
               <span class="material-symbols-outlined" id="sidebar-toggle-icon">menu_open</span>
             </button>
             <nav class="sidebar-nav">
+              <!-- Ids are crossed against labels throughout, deliberately:
+                   `dashboard` is Connections and `network` is Devices. The
+                   PAGES -> #{key}-view routing keys off these, and switchPage
+                   falls back to "dashboard", so renaming them buys nothing a
+                   user can see. The badge counts incoming connection requests,
+                   which is Connections' business. -->
               <a class="sidebar-link active" href="#" data-sidebar-link="dashboard">
                 <span class="material-symbols-outlined">wifi_tethering</span>
-                <span class="sidebar-label">Dashboard</span>
+                <span class="sidebar-label">Connections</span>
+                <span class="sidebar-badge hidden" id="devices-badge">0</span>
               </a>
               <a class="sidebar-link" href="#" data-sidebar-link="shares">
                 <span class="material-symbols-outlined">folder_shared</span>
                 <span class="sidebar-label">Shares</span>
               </a>
-              <!-- The two peer pages divide by responsibility, and their ids are
-                   crossed against their labels: `network` is the browser,
-                   `devices` is discovery. Renaming the ids would touch the
-                   PAGES -> #{key}-view routing for no user-visible gain. -->
               <a class="sidebar-link" href="#" data-sidebar-link="network">
                 <span class="material-symbols-outlined">devices</span>
                 <span class="sidebar-label">Devices</span>
-              </a>
-              <a class="sidebar-link" href="#" data-sidebar-link="devices">
-                <span class="material-symbols-outlined">travel_explore</span>
-                <span class="sidebar-label">Network</span>
-                <span class="sidebar-badge hidden" id="devices-badge">0</span>
               </a>
               <a class="sidebar-link" href="#" data-sidebar-link="activity">
                 <span class="material-symbols-outlined">monitoring</span>
@@ -101,11 +94,17 @@
           </div>
         </aside>
 
-        <!-- ========================== Dashboard ========================== -->
+        <!-- ========================= Connections ========================= -->
+        <!-- Labelled "Connections": both directions of reach in one page. The
+             top half is how phones and laptops get to you — the switch, the
+             link, the QR, the PIN. The bottom half is how you get to other
+             machines running LAN Share. Id stays `dashboard-view`; switchPage
+             falls back to that key. -->
         <section id="dashboard-view" class="app-main">
           <p class="hero-copy">
-            Share folders with any phone or laptop on this Wi-Fi. They open a link in a browser —
-            nothing to install.
+            Share folders with any phone or laptop on this Wi-Fi — they open a link in a browser,
+            nothing to install. Other computers running LAN Share show up further down; connect to
+            as many as you like, and what each one shares appears under Devices.
           </p>
 
           <div class="section-stack">
@@ -232,6 +231,60 @@
                 <div>Add a folder on the Shares page before starting the server.</div>
               </div>
             </div>
+
+            <!-- ==================================================
+                 Everything above is how other people reach you.
+                 Everything below is how you reach them.
+                 ================================================== -->
+
+            <!-- This device. The name only: the visibility pill used to live
+                 here reporting the state of a switch that was on another page,
+                 and the address repeated #lan-url. Both are a few hundred
+                 pixels up now, so both are gone. -->
+            <article class="card">
+              <div class="self-card">
+                <div class="self-icon"><span class="material-symbols-outlined">computer</span></div>
+                <div class="self-body">
+                  <div class="self-row">
+                    <input id="self-name" class="self-name" type="text" maxlength="48"
+                           aria-label="This device's name"
+                           data-tip="What this computer calls itself on the network. Other devices show this name in their list." />
+                    <button id="self-name-save" class="ghost-button" type="button"
+                            data-tip="Save the name above. Other devices pick it up within a few seconds.">Rename</button>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <!-- Discovery trouble -->
+            <div id="discovery-notice" class="notice notice-warn hidden">
+              <span class="material-symbols-outlined">wifi_off</span>
+              <div class="notice-body">
+                <div class="notice-title" id="discovery-notice-title"></div>
+                <div id="discovery-notice-body"></div>
+              </div>
+            </div>
+
+            <!-- One list, read like a Wi-Fi panel: what you are connected to at
+                 the top, then everything else on the network, then anything you
+                 have disconnected from. The one difference from Wi-Fi is that
+                 being connected to several at once is normal, so "Connected" is
+                 a state each row carries rather than a single highlighted entry. -->
+            <article class="card">
+              <div class="card-head device-card-head">
+                <span class="radar" id="radar" aria-hidden="true"
+                      data-tip="Sweeping means this device is listening for others."></span>
+                <h3 data-tip="Every device LAN Share can see on this network. Connect once — the six digits must match on both screens — and neither of you types a PIN again.">Devices on this network</h3>
+                <span class="count-pill" id="devices-count">0</span>
+                <span class="spacer"></span>
+                <button id="add-ip-btn" class="ghost-button" type="button"
+                        data-tip="Type a device's address by hand, for networks that block the automatic discovery message.">
+                  <span class="material-symbols-outlined">add</span>
+                  <span>Add by address</span>
+                </button>
+              </div>
+              <div id="devices-list" class="device-list" aria-live="polite" aria-relevant="additions"></div>
+            </article>
           </div>
         </section>
 
@@ -297,7 +350,7 @@
             <article class="card net-card">
               <div class="shares-toolbar net-toolbar">
                 <select id="net-device" class="iface-select"
-                        data-tip="Which connected device to browse. Connect to a new one on the Network page."></select>
+                        data-tip="Which connected device to browse. Connect to a new one on the Connections page."></select>
                 <button id="net-up" class="ghost-button" type="button"
                         data-tip="Up one folder, and from the top back to that device's list of shares.">
                   <span class="material-symbols-outlined">arrow_back</span>
@@ -355,76 +408,6 @@
                 </button>
               </div>
               <div id="net-downloads" class="net-downloads"></div>
-            </article>
-          </div>
-        </section>
-
-        <!-- =========================== Network =========================== -->
-        <!-- Labelled "Network": finding devices, and connecting to or
-             disconnecting from them. Nothing here browses files. Id stays
-             `devices-view` — see the sidebar note. -->
-        <section id="devices-view" class="app-main hidden">
-          <p class="hero-copy">
-            Every computer running LAN Share on this network appears here. Connect to as many as
-            you like — unlike Wi-Fi this is not one at a time — and what each one shares shows up
-            under Devices.
-          </p>
-
-          <div class="section-stack">
-            <!-- This device -->
-            <article class="card">
-              <div class="self-card">
-                <div class="self-icon"><span class="material-symbols-outlined">computer</span></div>
-                <div class="self-body">
-                  <div class="self-row">
-                    <input id="self-name" class="self-name" type="text" maxlength="48"
-                           aria-label="This device's name"
-                           data-tip="What this computer calls itself on the network. Other devices show this name in their list." />
-                    <button id="self-name-save" class="ghost-button" type="button"
-                            data-tip="Save the name above. Other devices pick it up within a few seconds.">Rename</button>
-                  </div>
-                  <div class="self-meta">
-                    <span id="self-addr" class="mono text-dim"></span>
-                  </div>
-                </div>
-                <!-- Presence follows the server, and nothing else. Sharing your
-                     folders and being findable are one decision, so there is one
-                     switch for it, on the Dashboard. -->
-                <span id="visibility-pill" class="pill pill-off self-visible"
-                      data-tip="Other devices can see this one while the server is running. Start or stop it on the Dashboard.">
-                  <span class="pill-dot"></span><span id="visibility-pill-text">Hidden</span>
-                </span>
-              </div>
-            </article>
-
-            <!-- Discovery trouble -->
-            <div id="discovery-notice" class="notice notice-warn hidden">
-              <span class="material-symbols-outlined">wifi_off</span>
-              <div class="notice-body">
-                <div class="notice-title" id="discovery-notice-title"></div>
-                <div id="discovery-notice-body"></div>
-              </div>
-            </div>
-
-            <!-- One list, read like a Wi-Fi panel: what you are connected to at
-                 the top, then everything else on the network, then anything you
-                 have disconnected from. The one difference from Wi-Fi is that
-                 being connected to several at once is normal, so "Connected" is
-                 a state each row carries rather than a single highlighted entry. -->
-            <article class="card">
-              <div class="card-head device-card-head">
-                <span class="radar" id="radar" aria-hidden="true"
-                      data-tip="Sweeping means this device is listening for others."></span>
-                <h3 data-tip="Every device LAN Share can see on this network. Connect once — the six digits must match on both screens — and neither of you types a PIN again.">Devices on this network</h3>
-                <span class="count-pill" id="devices-count">0</span>
-                <span class="spacer"></span>
-                <button id="add-ip-btn" class="ghost-button" type="button"
-                        data-tip="Type a device's address by hand, for networks that block the automatic discovery message.">
-                  <span class="material-symbols-outlined">add</span>
-                  <span>Add by address</span>
-                </button>
-              </div>
-              <div id="devices-list" class="device-list" aria-live="polite" aria-relevant="additions"></div>
             </article>
           </div>
         </section>
@@ -613,7 +596,7 @@
                 </div>
 
                 <div class="card-head" style="border-top:1px solid var(--line); border-bottom:0; padding-left:0; padding-right:0">
-                  <h3 data-tip="Browsers currently signed in with the PIN. Devices you are connected to are not listed here — disconnect or forget those on the Network page.">Signed-in browsers</h3>
+                  <h3 data-tip="Browsers currently signed in with the PIN. Devices you are connected to are not listed here — disconnect or forget those on the Connections page.">Signed-in browsers</h3>
                   <button id="revoke-all-btn" class="ghost-button" type="button"
                           data-tip="Sign every browser out at once. They need the PIN again; the PIN itself does not change.">
                     <span class="material-symbols-outlined">logout</span>
@@ -760,23 +743,6 @@
         </section>
       </div>
 
-      <!-- ======================== Console drawer ======================== -->
-      <aside class="console-drawer hidden" id="console-drawer">
-        <div class="console-head">
-          <span class="console-title">Console</span>
-          <div class="console-actions">
-            <button id="console-clear" class="icon-button" type="button" aria-label="Clear log"
-                    data-tip="Empty this log.">
-              <span class="material-symbols-outlined">delete</span>
-            </button>
-            <button id="console-close" class="icon-button" type="button" aria-label="Close console"
-                    data-tip="Hide the console. Nothing stops being logged.">
-              <span class="material-symbols-outlined">close</span>
-            </button>
-          </div>
-        </div>
-        <div class="console-body" id="console-body"></div>
-      </aside>
     </div>
 
     <!-- ===================== Pairing: outgoing ========================== -->
@@ -838,7 +804,7 @@
         <h3 id="addip-title">Add a device by address</h3>
         <p class="text-muted">
           Use this when a device does not appear on its own — some networks block the discovery
-          message. Find the address on the other device's Dashboard.
+          message. Find the address on the other device's Connections page.
         </p>
         <div class="path-grid" style="margin-top:12px">
           <div class="path-row">
