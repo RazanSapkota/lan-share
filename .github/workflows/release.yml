@@ -1,0 +1,96 @@
+name: Release
+
+# Fires when you publish a release in the GitHub UI:
+#   Releases -> Draft a new release -> choose/create a tag, target `main` -> Publish
+#
+# The `release` event checks out the tag, so what gets built is exactly what the
+# release points at -- not whatever `main` happens to be by the time CI runs.
+on:
+  release:
+    types: [published]
+  # Rehearse the whole build without cutting a release. Artifacts land on the
+  # Actions run instead of on a release page.
+  workflow_dispatch:
+
+permissions:
+  # Needed to upload assets onto the release. Without it `gh release upload`
+  # fails with a 403 that reads like an auth problem but is a scope problem.
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Three files carry the version and nothing keeps them in step. Failing
+      # here costs 20 seconds; failing to notice ships an installer whose
+      # "Add or remove programs" entry disagrees with the release it came from.
+      - name: Check the tag matches the version in the manifests
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.release.tag_name }}" -replace '^v', ''
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+                    Select-Object -First 1).Matches[0].Groups[1].Value
+          Write-Host "tag=$tag  tauri.conf.json=$conf  Cargo.toml=$cargo"
+          if ($tag -ne $conf -or $tag -ne $cargo) {
+            throw "Version mismatch. Set src-tauri/tauri.conf.json and src-tauri/Cargo.toml to $tag, push, then re-publish the release."
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cargo.lock is committed, so this cache is a real hit rather than a
+      # best-effort one. Cuts a cold ~12 minute build to roughly 3.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Prebuilt binary. `cargo install tauri-cli` would compile the CLI from
+      # source on every run, which costs more than the app build does.
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Install the Tauri CLI
+        run: cargo binstall tauri-cli --version "^2" --no-confirm
+
+      # There is no frontend build step -- `frontendDist` is the static ui/
+      # folder and `beforeBuildCommand` is empty -- so this needs no Node at all.
+      - name: Build
+        run: cargo tauri build
+
+      - name: Collect the artifacts
+        shell: pwsh
+        run: |
+          $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          # The bundler names this one; the cargo binary is named after the
+          # crate (`lan_share_tauri`), which is not what anyone wants to see on
+          # a download button.
+          Copy-Item "src-tauri/target/release/bundle/nsis/*-setup.exe" dist/
+          Copy-Item "src-tauri/target/release/lan_share_tauri.exe" "dist/LAN-Share-$v-portable-x64.exe"
+
+          Get-ChildItem dist | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.event.release.tag_name }}"
+          # One call per file: neither gh nor PowerShell expands a glob for a
+          # native command, so `dist/*` would be uploaded as a literal filename.
+          Get-ChildItem dist | ForEach-Object {
+            Write-Host "uploading $($_.Name)"
+            gh release upload $tag $_.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { throw "upload failed for $($_.Name)" }
+          }
+
+      # A manual run has no release to attach to, so keep the build reachable.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: lan-share-windows
+          path: dist/
