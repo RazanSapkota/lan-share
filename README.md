@@ -34,7 +34,7 @@ Tauri v2, vanilla HTML/CSS/JS, **no bundler and no npm dependencies**.
   and whether the transfer finished or died mid-stream.
 - **QR code** so a phone joins by pointing its camera at the screen.
 
-### Devices, in short
+### Device to device, in short
 
 Two computers running LAN Share on one network see each other within about five
 seconds. Click **Pair** on one; both then show the same six-digit code and you
@@ -42,8 +42,8 @@ tap **Accept** on the other. Nothing to type — and the matching code is what
 stops a stranger on the same Wi-Fi from impersonating your laptop.
 
 After that each can browse the other's shares without a PIN, from the
-**Network** page. **Devices** does pairing and nothing else; **Shares** is what
-you hand out; **Network** is what you can reach.
+**Devices** page. **Network** does pairing and nothing else; **Shares** is what
+you hand out; **Devices** is what you can reach.
 
 **Nothing pushes.** A device cannot send you a file, only offer one for you to
 come and take. That is a smaller protocol and a much smaller question — there is
@@ -106,9 +106,17 @@ src-tauri/
     utils.rs, tests.rs
 ```
 
-The desktop panel's three file pages divide by *whose files*: **Shares** is what
-you hand out, **Network** is what other devices hand to you, **Devices** is only
-who you have paired with. They were one page once, and it did all three badly.
+The desktop panel's three peer pages divide by *responsibility*: **Shares** is
+what you hand out, **Devices** is what other devices hand to you and everything
+you do with it, **Network** is only finding them and connecting or
+disconnecting. They were one page once, and it did all three badly.
+
+The two peer labels were also the wrong way round for a while: the file browser
+was called Network, which named the wire rather than the job, and left the
+device list looking like it ought to browse. Note that the section ids still
+carry the old sense — `#network-view` is the Devices page and `#devices-view` is
+the Network page — because renaming them would touch the `PAGES` → `#{key}-view`
+routing for no user-visible gain.
 
 The **two-frontend split** is the central structural decision: `ui/` is what the
 app window shows, `src-tauri/web/` is what phones see. The receiver UI uses no
@@ -238,7 +246,7 @@ reason.
 each other, which needed an offer protocol, an accept prompt, a nominated
 receive folder, a `.part` write path and a transfer table — around 1,500 lines
 whose entire job was making it safe for someone else to write to your disk.
-Browsing replaces all of it: the Network page reads over the same routes a
+Browsing replaces all of it: the Devices page reads over the same routes a
 browser uses, and a download is this machine deciding to fetch something. The
 offer routes are gone from the router, and a test asserts they stay gone.
 
@@ -265,9 +273,9 @@ its issuer.
 |---|---|
 | ![](docs/screenshots/desktop-shares.png) | ![](docs/screenshots/desktop-activity.png) |
 
-| Desktop — devices | Pairing code |
+| Desktop — network | Pairing code |
 |---|---|
 | ![](docs/screenshots/desktop-devices.png) | ![](docs/screenshots/pairing-code.png) |
 
-The Devices and Activity shots predate the split into Shares / Network /
-Devices, and there is no Network shot yet.
+The Network and Activity shots predate the split into Shares / Devices /
+Network, and there is no Devices shot yet.

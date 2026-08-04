@@ -73,13 +73,17 @@
                 <span class="material-symbols-outlined">folder_shared</span>
                 <span class="sidebar-label">Shares</span>
               </a>
+              <!-- The two peer pages divide by responsibility, and their ids are
+                   crossed against their labels: `network` is the browser,
+                   `devices` is discovery. Renaming the ids would touch the
+                   PAGES -> #{key}-view routing for no user-visible gain. -->
               <a class="sidebar-link" href="#" data-sidebar-link="network">
-                <span class="material-symbols-outlined">travel_explore</span>
-                <span class="sidebar-label">Network</span>
-              </a>
-              <a class="sidebar-link" href="#" data-sidebar-link="devices">
                 <span class="material-symbols-outlined">devices</span>
                 <span class="sidebar-label">Devices</span>
+              </a>
+              <a class="sidebar-link" href="#" data-sidebar-link="devices">
+                <span class="material-symbols-outlined">travel_explore</span>
+                <span class="sidebar-label">Network</span>
                 <span class="sidebar-badge hidden" id="devices-badge">0</span>
               </a>
               <a class="sidebar-link" href="#" data-sidebar-link="activity">
@@ -148,7 +152,7 @@
                   </div>
 
                   <div class="url-meta">
-                    <label for="iface-select" class="text-dim">Network</label>
+                    <label for="iface-select" class="text-dim">Adapter</label>
                     <select id="iface-select" class="iface-select"
                             data-tip="Which network adapter's address to hand out. If a phone can't connect, try the Wi-Fi one rather than a virtual adapter."></select>
                   </div>
@@ -278,9 +282,11 @@
           </article>
         </section>
 
-        <!-- =========================== Network =========================== -->
-        <!-- What other devices share with you. The mirror of the Shares page,
-             which is what you share with them. -->
+        <!-- =========================== Devices =========================== -->
+        <!-- Labelled "Devices": the devices you are connected to, and what you
+             do with them — browse, download, play. The mirror of the Shares
+             page, which is what you share with them. Ids stay `network-*` /
+             `net-*`; the label was what confused people, not the selectors. -->
         <section id="network-view" class="app-main hidden">
           <p class="hero-copy">
             Folders the devices you have paired with are sharing. Browse them, preview what is
@@ -291,7 +297,7 @@
             <article class="card net-card">
               <div class="shares-toolbar net-toolbar">
                 <select id="net-device" class="iface-select"
-                        data-tip="Which paired device to browse. Pair a new one on the Devices page."></select>
+                        data-tip="Which connected device to browse. Pair a new one on the Network page."></select>
                 <button id="net-up" class="ghost-button" type="button"
                         data-tip="Up one folder, and from the top back to that device's list of shares.">
                   <span class="material-symbols-outlined">arrow_back</span>
@@ -353,11 +359,14 @@
           </div>
         </section>
 
-        <!-- =========================== Devices =========================== -->
+        <!-- =========================== Network =========================== -->
+        <!-- Labelled "Network": finding devices, and connecting to or
+             disconnecting from them. Nothing here browses files. Id stays
+             `devices-view` — see the sidebar note. -->
         <section id="devices-view" class="app-main hidden">
           <p class="hero-copy">
             Other computers running LAN Share on this network appear here. Pair once, and their
-            shared folders show up under Network.
+            shared folders show up under Devices.
           </p>
 
           <div class="section-stack">
@@ -416,7 +425,7 @@
             <!-- Paired -->
             <article class="card">
               <div class="card-head">
-                <h3 data-tip="Devices you have paired with. You can browse what they share, and they can browse what you share, without either of you typing a PIN.">Connected devices</h3>
+                <h3 data-tip="Devices you have paired with. Neither of you types a PIN again — open the Devices page to browse what they offer, and they can browse yours.">Connected devices</h3>
                 <span class="count-pill" id="paired-count">0</span>
               </div>
               <div id="paired-list" class="device-list"></div>
@@ -489,7 +498,7 @@
             <section class="settings-section">
               <div class="settings-head">
                 <span class="settings-tag">Server</span>
-                <h2 class="settings-title-sm">Network</h2>
+                <h2 class="settings-title-sm">Server</h2>
                 <p class="settings-desc">Where the server listens for connections.</p>
               </div>
               <div class="settings-body">
@@ -608,7 +617,7 @@
                 </div>
 
                 <div class="card-head" style="border-top:1px solid var(--line); border-bottom:0; padding-left:0; padding-right:0">
-                  <h3 data-tip="Browsers currently signed in. Paired devices are not listed here — unpair those on the Devices page.">Connected devices</h3>
+                  <h3 data-tip="Browsers currently signed in. Paired devices are not listed here — unpair those on the Network page.">Connected devices</h3>
                   <button id="revoke-all-btn" class="ghost-button" type="button"
                           data-tip="Sign every browser out at once. They need the PIN again; the PIN itself does not change.">
                     <span class="material-symbols-outlined">logout</span>
@@ -851,7 +860,7 @@
       </div>
     </div>
 
-    <!-- ================== Network preview (lightbox) ==================== -->
+    <!-- ================== Devices preview (lightbox) ==================== -->
     <!-- Full-size media from another device. The image or video loads from a
          play link on that machine, so it streams and seeks rather than being
          copied here first. -->

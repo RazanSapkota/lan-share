@@ -20,8 +20,8 @@
     15  Activity page
     16  Settings page
     17  Event wiring + boot
-    18  Devices — discovery and pairing
-    19  Network — browsing another device's shares
+    18  Network — discovery and pairing
+    19  Devices — browsing another device's shares
     20  Tooltips
    ========================================================= */
 
@@ -1432,8 +1432,12 @@ async function boot() {
 document.addEventListener("DOMContentLoaded", boot);
 
 // ============================================================
-// 18  Devices — discovery, pairing, transfers
+// 18  Network — discovery, pairing, transfers
 // ============================================================
+//
+// The page labelled "Network": finding devices and connecting to or
+// disconnecting from them. Its ids read `devices-*` — label and id are crossed
+// with section 19 on purpose, see the sidebar comment in index.html.
 
 const DEVICES_TICK_MS = 1500;
 /// Incoming pair requests and file offers must be noticed from ANY page, so
@@ -1756,11 +1760,7 @@ function peerRowHtml(p) {
                data-tip="Forget this device entirely. You would both have to pair again from scratch.">
          <span class="material-symbols-outlined">link_off</span>
        </button>`
-    : `<button class="primary-button" type="button" data-dev="browse" data-id="${id}" ${p.online ? "" : "disabled"}
-               data-tip="Open this device on the Network page: browse what it shares, preview it, and pull down what you want.">
-         <span class="material-symbols-outlined">folder_open</span><span>Browse</span>
-       </button>
-       <button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
+    : `<button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
                data-tip="Rename this device in your list. Only you see the new name.">
          <span class="material-symbols-outlined">edit</span>
        </button>
@@ -1790,9 +1790,11 @@ function peerRowHtml(p) {
                 aria-checked="${p.auto_accept}" aria-label="Always accept files from ${escapeHtml(p.name)}"
                 data-tip="${p.auto_accept ? "Go back to asking before files from this device are saved." : "Save files from this device without prompting. Only do this for a device you own."}"></button>
       </span>
-      <!-- Wrapper tip, because a disabled Send/Browse button never sees the
-           pointer and so could not explain its own greyed-out state. -->
-      <span class="device-actions"${p.online || p.blocked ? "" : ' data-tip="Offline: Send and Browse need the other device awake and running LAN Share. Everything else here still works."'}>${actions}</span>
+      <!-- Every action left here is bookkeeping — renaming, blocking, unpairing
+           — and all of it works against a device that is asleep. Nothing greys
+           out on offline any more, so the row needs no wrapper tip to explain a
+           disabled button. -->
+      <span class="device-actions">${actions}</span>
     </div>`;
 }
 
@@ -1934,8 +1936,6 @@ async function answerIncomingPair(accept) {
 
 // --- sending ---------------------------------------------------------------
 
-// --- browse ----------------------------------------------------------------
-
 // --- delegated actions -----------------------------------------------------
 
 async function onDeviceAction(event) {
@@ -1948,10 +1948,6 @@ async function onDeviceAction(event) {
   switch (action) {
     case "pair":
       return startPairing(id);
-    case "browse":
-      // Browsing is a page, not a dialog: go there with this device chosen.
-      state.network.deviceId = id;
-      return switchPage("network");
     case "block": {
       if (!peer) return;
       const ok = await confirmDialog(
@@ -2037,7 +2033,7 @@ function wireDevices() {
   });
 
   // Escape on an incoming request SNOOZES rather than answering: the request
-  // stays pending and re-opens from the Devices page. Answering on Escape
+  // stays pending and re-opens from the Network page. Answering on Escape
   // would make a stray keypress a security decision.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
@@ -2056,11 +2052,14 @@ function wireDevices() {
 }
 
 // ============================================================
-// 19  Network — what other devices share
+// 19  Devices — what other devices share
 // ============================================================
 //
-// The mirror of the Shares page: that one is what you hand out, this one is
-// what you can reach. Everything here reads; nothing on either side can push.
+// The page labelled "Devices": the devices you are connected to, and what you
+// do with them. The mirror of the Shares page — that one is what you hand out,
+// this one is what you can reach. Everything here reads; nothing on either side
+// can push. Its ids read `net-*` / `network-*`, crossed against the label; see
+// section 18 and the sidebar comment in index.html.
 //
 // Three things the desktop webview cannot do directly, and how each is solved:
 //   - thumbnails need a bearer token an <img> cannot send, so `peer_thumb`
@@ -2236,7 +2235,7 @@ function renderNetwork() {
     host.innerHTML = netEmpty(
       "devices",
       "No paired devices yet",
-      "Pair a computer on the Devices page and whatever it shares will show up here."
+      "Pair a computer on the Network page and whatever it shares will show up here."
     );
     return renderNetSelection();
   }

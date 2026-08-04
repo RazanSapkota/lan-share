@@ -291,7 +291,7 @@ impl PeerRegistry {
     }
 }
 
-/// What the desktop Devices page renders for a paired device. `Peer` minus the
+/// What the desktop Network page renders for a paired device. `Peer` minus the
 /// tokens -- those must never reach the UI layer -- plus derived presence.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PeerView {

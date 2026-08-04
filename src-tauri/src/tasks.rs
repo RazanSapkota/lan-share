@@ -1731,7 +1731,7 @@ pub(crate) async fn play_peer_file(
 
 /// Mint a play link on the far device and build the URL it serves from.
 ///
-/// Shared by "open in player" and by the Network page's own preview, because
+/// Shared by "open in player" and by the Devices page's own preview, because
 /// they want the same thing: a plain `http://` URL for one file, good for a few
 /// hours, that something other than this app can fetch. See `models::PlayToken`.
 async fn peer_play_url(
