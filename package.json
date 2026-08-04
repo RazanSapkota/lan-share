@@ -1,7 +1,7 @@
 {
   "name": "lan-share",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Rust + Tauri desktop app that shares media files and folders over the local network",
   "license": "MIT",
   "scripts": {
