@@ -50,8 +50,10 @@ function decodePng(buf) {
   let channels = 0;
   const idat = [];
 
-  // Walk the chunks. Everything that is not IHDR or IDAT is skipped -- the
-  // source carries a 29 KB private chunk from the tool that made it.
+  // Walk the chunks. Everything that is not IHDR or IDAT is skipped, which is
+  // what lets the source be swapped for whatever an art tool exports: the
+  // artwork before this one carried a 29 KB private `caBX` chunk, the current
+  // one is IHDR/IDAT/IEND and nothing else.
   for (let at = 8; at + 8 <= buf.length; ) {
     const length = buf.readUInt32BE(at);
     const type = buf.toString("ascii", at + 4, at + 8);
@@ -136,10 +138,11 @@ function decodePng(buf) {
 
 /// Tightest box containing every pixel that is not fully transparent.
 ///
-/// The artwork is a shape floating in a larger transparent canvas -- roughly a
-/// fifth of each axis is empty. Left in, every icon would render a size smaller
-/// than its neighbours in the taskbar, which is the whole reason the previous
-/// mark ran to the edges of its canvas.
+/// A no-op on artwork that already fills its canvas, which the current source
+/// does. It is here for artwork that does not: the mark before this one sat
+/// 839px inside a 1024 canvas, and left in, that padding renders every icon a
+/// size smaller than its neighbours in the taskbar. Swapping the source is one
+/// file drop, so the tool should not care which kind it gets.
 function alphaBounds({ width, height, rgba }) {
   let minX = width;
   let minY = height;
@@ -268,10 +271,15 @@ function png2(width, height, rgba) {
 
   // Adaptive filtering: try all five on each row and keep the one whose output
   // has the smallest sum of absolute signed deviations. That is the heuristic
-  // the spec suggests and every real encoder uses; measured on this artwork it
-  // is worth about 11% over a fixed Sub filter. Not dramatic -- a photographic
-  // gradient is simply not what PNG is good at -- but the icons are embedded in
-  // the binary with include_bytes!, so it is binary size, not just disk.
+  // the spec suggests and every real encoder uses.
+  //
+  // What it is worth depends entirely on the artwork. Against a fixed Sub
+  // filter it saved about 11% on the previous mark, which was a photographic
+  // gradient; on the current flat-colour squircle it saves 3% across the set,
+  // and at 128 and 256 it is a fraction of a percent worse than Sub because a
+  // per-row choice cannot help rows that are already one repeated colour. It
+  // stays because it is never far wrong on either kind of source, and the
+  // icons are include_bytes!'d into the binary, so this is binary size.
   const stride = width * 4;
   const raw = Buffer.alloc((stride + 1) * height);
   const candidate = Buffer.alloc(stride);

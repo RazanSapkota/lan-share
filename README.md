@@ -145,11 +145,13 @@ ICNS are all simple enough containers to emit by hand, and that beats adding an
 image toolchain to a project whose whole boast is not having one. Delete
 `src-tauri/icons/` and one command puts it back.
 
-The artwork sits 839px inside a 1024 canvas, so the script crops to the alpha
-bounds before scaling — left in, that padding would make every icon sit a size
-smaller than its neighbours in the taskbar. The box filter weights colour by
-alpha rather than averaging samples, because the transparent pixels around the
-artwork are dark and a straight average drags a fringe into every edge.
+The source is an 800px squircle that fills its canvas, so the crop-to-alpha-
+bounds step is a no-op on it — it is there because the artwork before this one
+sat 839px inside a 1024 canvas, and that padding made every icon render a size
+smaller than its neighbours in the taskbar. The box filter still earns its keep
+at the corners: it weights colour by alpha rather than averaging samples, and
+the transparent pixels outside the squircle are pure black, so a straight
+average would draw a dark fringe around all four of them.
 
 **There is one mark, and it is that file.** The window header, the PIN screen
 and the tab icon all show it: `ui/icon.png` for the desktop panel (which can
@@ -163,7 +165,8 @@ not a missing icon — the shell scales a neighbour instead, and that upscale is
 what "blurry icon" actually is. 16/20/24/32 for lists and the title bar, 40 at
 125% DPI, 48/64 for the taskbar and Alt-Tab, 96/128/256 for Explorer. Entries
 below 64px are uncompressed DIBs and the rest are PNG, which is what keeps the
-file at 37 KB rather than 100 — a 128px DIB alone is 67 KB.
+file at 54 KB: the same ten sizes as DIBs throughout would be 409 KB, because a
+DIB costs `w × h × 4` whatever is drawn on it — the 256 alone is 264 KB.
 
 **`build.rs` watches the icons, and has to.** `tauri_build` compiles
 `icons/icon.ico` into a Windows resource, but the only path it registers with
