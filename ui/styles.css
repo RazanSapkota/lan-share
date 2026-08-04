@@ -51,7 +51,12 @@
   --radius-xl: 1.5rem;
 
   --header-h: 56px;
-  --pad: 16px;
+  /* The one horizontal inset. Every block that is direct card content uses it,
+     so content left-edges line up down a page no matter which card they are in
+     -- which stopped being automatic once Connections stacked seven of them.
+     Vertical padding stays per-block: a hero card should breathe more than a
+     list row, and that is density, not misalignment. */
+  --pad: 20px;
 
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei UI", sans-serif;
@@ -408,11 +413,6 @@ code {
   flex-direction: row;
   flex: 1 1 auto;
   min-height: 0;
-}
-
-.app-main {
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
 /* Sidebar */
@@ -883,10 +883,11 @@ button:focus-visible {
 
 .app-main {
   flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 20px;
+  padding: var(--pad);
 }
 
 .hero-copy {
@@ -909,7 +910,7 @@ button:focus-visible {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-dim);
-  padding: 14px 16px 0;
+  padding: 14px var(--pad) 0;
 }
 
 /* =========================================================
@@ -2164,7 +2165,7 @@ input[type="text"]:disabled {
   grid-template-columns: auto 1fr auto;
   gap: 18px;
   align-items: center;
-  padding: 20px;
+  padding: 20px var(--pad);
 }
 
 .power-toggle {
@@ -2219,7 +2220,7 @@ input[type="text"]:disabled {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 20px;
   align-items: start;
-  padding: 18px 20px 20px;
+  padding: 18px var(--pad) 20px;
 }
 
 @media (max-width: 900px) {
@@ -2344,7 +2345,7 @@ input[type="text"]:disabled {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 14px var(--pad);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface-2);
@@ -2383,7 +2384,7 @@ input[type="text"]:disabled {
 .notice {
   display: flex;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 12px var(--pad);
   border-radius: var(--radius-md);
   border: 1px solid var(--line);
   background: var(--surface-2);
@@ -2425,7 +2426,7 @@ input[type="text"]:disabled {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 14px 16px;
+  padding: 14px var(--pad);
   border-bottom: 1px solid var(--line);
 }
 .shares-toolbar .spacer { flex: 1 1 auto; }
@@ -2476,6 +2477,14 @@ input[type="text"]:disabled {
 
 .shares-table tbody tr:hover { background: var(--surface-2); }
 .shares-table tbody tr.is-disabled { opacity: 0.55; }
+
+/* Only the outer cells carry the card's inset, so the first column starts on
+   the same line as every other card's content while the inner columns stay
+   tight. Padding every cell to --pad would space the columns, not the edges. */
+.shares-table th:first-child,
+.shares-table td:first-child { padding-left: var(--pad); }
+.shares-table th:last-child,
+.shares-table td:last-child { padding-right: var(--pad); }
 
 .sh-name { font-weight: 600; color: var(--text); }
 .sh-path {
@@ -2617,6 +2626,12 @@ input[type="text"]:disabled {
 }
 .activity-table tbody tr:hover { background: var(--surface-2); }
 
+/* Edge cells only -- see the note on .shares-table. */
+.activity-table th:first-child,
+.activity-table td:first-child { padding-left: var(--pad); }
+.activity-table th:last-child,
+.activity-table td:last-child { padding-right: var(--pad); }
+
 .act-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
 .act-ip { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
 .act-action {
@@ -2674,7 +2689,7 @@ input[type="text"]:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 16px;
+  padding: 14px var(--pad);
   border-bottom: 1px solid var(--line);
 }
 .card-head h3 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
@@ -2688,7 +2703,7 @@ input[type="text"]:disabled {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 10px var(--pad);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface-2);
@@ -2719,7 +2734,7 @@ input[type="text"]:disabled {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
-  padding: 16px 18px;
+  padding: 16px var(--pad);
 }
 
 .self-icon {
@@ -2791,7 +2806,7 @@ input[type="text"]:disabled {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
-  padding: 13px 16px;
+  padding: 13px var(--pad);
   border-bottom: 1px solid var(--line);
   transition: background 0.14s ease;
 }
@@ -3048,13 +3063,13 @@ input[type="text"]:disabled {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  padding: 10px 16px;
+  padding: 10px var(--pad);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--primary) 7%, var(--surface));
 }
 
-.net-body { padding: 14px 16px; min-height: 220px; }
+.net-body { padding: 14px var(--pad); min-height: 220px; }
 
 /* --------------------------------------------------------- grid */
 
@@ -3181,7 +3196,7 @@ input[type="text"]:disabled {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 10px 16px;
+  padding: 10px var(--pad);
   border-bottom: 1px solid var(--line);
 }
 .net-download-row:last-child { border-bottom: 0; }
