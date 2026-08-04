@@ -2710,12 +2710,13 @@ input[type="text"]:disabled {
 
 /* --------------------------------------------------------- this device */
 
-/* Icon and name. There was a third column holding a "Visible / Hidden" pill,
-   which reported the state of a switch that lived on another page. Both are on
-   this page now, so the pill was restating something a few hundred pixels up. */
+/* Icon, name, and the jump to Settings that edits it. There was a "Visible /
+   Hidden" pill here too, reporting the state of a switch that lived on another
+   page; both are on this page now, so it was restating something a few hundred
+   pixels up. */
 .self-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   padding: 16px 18px;
@@ -2736,13 +2737,20 @@ input[type="text"]:disabled {
 .self-body { min-width: 0; display: grid; gap: 4px; }
 .self-row { display: flex; align-items: center; gap: 8px; }
 
-.self-name {
-  flex: 1 1 auto;
+/* Text, not an input: the field that edits this lives in Settings. */
+.self-name-text {
   min-width: 0;
-  max-width: 320px;
   font-size: 15px;
   font-weight: 600;
-  padding: 7px 10px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .self-card { grid-template-columns: auto minmax(0, 1fr); }
+  .self-card .ghost-button { grid-column: 2; justify-self: start; }
 }
 
 /* --------------------------------------------------------- radar */

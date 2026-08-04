@@ -397,6 +397,21 @@ a { color: var(--primary); text-decoration: none; }
 .crumb:last-child { color: var(--text); }
 .crumb-sep { color: var(--text-dim); font-size: 13px; flex: none; }
 
+/* The host machine, as the root of the trail. Not a button: it is not a level
+   you can navigate to, and the share picker above it already is. Naming it here
+   costs no vertical space, which a second topbar row on a phone would. */
+.crumb-host {
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 2px 6px 6px;
+  flex: none;
+  max-width: 30vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* --------------------------------------------------------- share picker */
 
 .shares-main {

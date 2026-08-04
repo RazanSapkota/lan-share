@@ -473,6 +473,17 @@
     });
   }
 
+  /// The host's name, in every place it shows. The shell already ships it
+  /// server-side, so the tab and the PIN heading are named before this runs;
+  /// this keeps them right if the host is renamed while the page is open, and
+  /// after a sign-out, which re-renders nothing else.
+  function applyDeviceName(name) {
+    const host = name || "LAN Share";
+    document.title = host;
+    $("pin-title").textContent = host;
+    $("server-name").textContent = host;
+  }
+
   function showPin() {
     showScreen("screen-pin");
     $("pin-error").textContent = "";
@@ -807,13 +818,22 @@
       { name: listing.share_name, path: "" },
       ...(listing.breadcrumbs || []),
     ];
-    crumbs.innerHTML = parts
-      .map(
-        (c, i) =>
-          (i ? '<span class="crumb-sep">/</span>' : "") +
-          `<button class="crumb" type="button" data-crumb="${escapeHtml(c.path)}">${escapeHtml(c.name)}</button>`
-      )
-      .join("");
+    // The host is the root of the trail. Not a button -- it is not a level you
+    // can navigate to -- but without it the browse screen is the one place a
+    // guest spends real time with nothing naming the machine they are on.
+    const host = (state.session && state.session.deviceName) || "";
+    const root = host
+      ? `<span class="crumb-host">${escapeHtml(host)}</span><span class="crumb-sep">/</span>`
+      : "";
+    crumbs.innerHTML =
+      root +
+      parts
+        .map(
+          (c, i) =>
+            (i ? '<span class="crumb-sep">/</span>' : "") +
+            `<button class="crumb" type="button" data-crumb="${escapeHtml(c.path)}">${escapeHtml(c.name)}</button>`
+        )
+        .join("");
     // Keep the deepest crumb visible when the trail overflows.
     crumbs.scrollLeft = crumbs.scrollWidth;
   }
@@ -1077,7 +1097,7 @@
   // Framed as sending TO a named device rather than "uploading to a folder":
   // to the person holding the phone this is the same act as a desktop peer
   // sending them a file, and it should read that way.
-  const host = state.session && state.session.serverName;
+  const host = state.session && state.session.deviceName;
   $("upload-title").textContent = host ? "Send files to " + host : "Send files";
 
     state.uploadQueue = [];
@@ -1433,16 +1453,13 @@
     }
 
     setBanner("");
+    applyDeviceName(state.session.deviceName);
 
     if (!state.session.authenticated) {
-      $("pin-host").textContent = state.session.serverName
-        ? "Enter the PIN shown on " + state.session.serverName
-        : "Enter the PIN shown on the host";
       showPin();
       return;
     }
 
-    $("server-name").textContent = state.session.serverName || "LAN Share";
     if (state.session.defaultView) state.view = state.session.defaultView;
     if (state.session.defaultSort) {
       state.sort = state.session.defaultSort;

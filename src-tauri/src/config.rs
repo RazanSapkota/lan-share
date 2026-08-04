@@ -57,6 +57,17 @@ pub(crate) fn normalize(config: &mut AppConfig) {
         config.device_name = crate::net::hostname().unwrap_or_else(|| "LAN Share".to_string());
     }
 
+    // One name now, where there used to be `server_name` for browsers and
+    // `device_name` for peers. Adopt the old browser-facing name only if the
+    // device name was never touched -- if the user customised both, the one
+    // they think of as "the device name" is the one they meant to keep.
+    if let Some(old) = config.legacy_server_name.take() {
+        let old = clean_device_name(&old);
+        if !old.is_empty() && config.device_name == crate::models::default_server_name() {
+            config.device_name = old;
+        }
+    }
+
     // A peer needs both tokens to be usable in either direction. A half-written
     // entry (interrupted pairing, hand-edited file) can only produce confusing
     // one-way failures, so drop it and let the user re-pair.

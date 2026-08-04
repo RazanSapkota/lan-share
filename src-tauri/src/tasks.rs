@@ -17,7 +17,7 @@ use tauri::State;
 use crate::{
     activity, auth, config, media,
     models::{
-        ActivityEntry, AppConfig, AppState, DeviceIdentity, DiscoveredPeer, DiscoveredPeerView,
+        ActivityEntry, AppConfig, AppState, DiscoveredPeer, DiscoveredPeerView,
         DiscoveryStatus, DownloadResult, FirewallHint, IndexShareResponse, LanUrl,
         PairPromptView, PairResult, Peer, PeerView, PrewarmResponse, ProgressPayload, QrPayload,
         SaveConfigResult, ServerSettings, ServerStatus, Session, SessionView, Share, ShareView,
@@ -1194,42 +1194,6 @@ pub(crate) fn open_url(url: String) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn format_bytes_command(size: u64) -> String {
     utils::format_bytes(size)
-}
-
-// ---------------------------------------------------------------------------
-// Peers: this device
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub(crate) fn get_device_identity(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> DeviceIdentity {
-    let _ = state;
-    let config = config::load_config_impl(&app);
-    DeviceIdentity {
-        device_id: config.device_id,
-        name: config.device_name,
-        platform: crate::models::platform_name(),
-        addresses: net::lan_addresses().into_iter().map(|a| a.ip).collect(),
-        peering_enabled: config.peering_enabled,
-    }
-}
-
-#[tauri::command]
-pub(crate) fn set_device_name(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<String, String> {
-    mutate_config(&app, &state, |config| {
-        let cleaned = config::clean_device_name(&name);
-        if cleaned.is_empty() {
-            return Err("the device name cannot be empty".to_string());
-        }
-        config.device_name = cleaned.clone();
-        Ok(cleaned)
-    })
 }
 
 // ---------------------------------------------------------------------------

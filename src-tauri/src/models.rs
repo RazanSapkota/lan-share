@@ -394,15 +394,6 @@ pub(crate) struct PairResult {
 // Device identity and discovery status
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct DeviceIdentity {
-    pub(crate) device_id: String,
-    pub(crate) name: String,
-    pub(crate) platform: String,
-    pub(crate) addresses: Vec<String>,
-    pub(crate) peering_enabled: bool,
-}
-
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct DiscoveryStatus {
     /// We are announcing, so other devices can see this one. Running the server
@@ -580,7 +571,6 @@ pub(crate) struct ServerSettings {
     pub(crate) port: u16,
     pub(crate) bind_address: String,
     pub(crate) auto_port: bool,
-    pub(crate) server_name: String,
     pub(crate) strict_host_check: bool,
     pub(crate) keep_awake: bool,
     pub(crate) pin_enabled: bool,
@@ -627,7 +617,6 @@ impl ServerSettings {
             port: config.port,
             bind_address: config.bind_address.clone(),
             auto_port: config.auto_port,
-            server_name: config.server_name.clone(),
             strict_host_check: config.strict_host_check,
             keep_awake: config.keep_awake,
             pin_enabled: config.pin_enabled,
@@ -814,8 +803,13 @@ pub(crate) struct AppConfig {
     /// have context for -- not silently at launch.
     #[serde(default)]
     pub(crate) autostart_server: bool,
-    #[serde(default = "default_server_name")]
-    pub(crate) server_name: String,
+    /// Retired. There used to be two names -- this one for browsers and
+    /// `device_name` for peers -- both defaulting to the hostname, edited in two
+    /// places on two save paths. `normalize` folds any value found here into
+    /// `device_name` and `skip_serializing` drops it on the next save, so this
+    /// exists only to carry a config written before the merge.
+    #[serde(rename = "server_name", default, skip_serializing)]
+    pub(crate) legacy_server_name: Option<String>,
     /// `SetThreadExecutionState` so the laptop does not suspend mid-transfer.
     #[serde(default = "default_true")]
     pub(crate) keep_awake: bool,
@@ -927,7 +921,7 @@ fn default_port() -> u16 {
 fn default_bind_address() -> String {
     "0.0.0.0".to_string()
 }
-fn default_server_name() -> String {
+pub(crate) fn default_server_name() -> String {
     net::hostname().unwrap_or_else(|| "LAN Share".to_string())
 }
 fn default_session_hours() -> u32 {
@@ -982,7 +976,7 @@ impl Default for AppConfig {
             bind_address: default_bind_address(),
             auto_port: true,
             autostart_server: false,
-            server_name: default_server_name(),
+            legacy_server_name: None,
             keep_awake: true,
             strict_host_check: true,
             pin_enabled: true,

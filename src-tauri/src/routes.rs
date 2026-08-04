@@ -155,7 +155,8 @@ pub(crate) async fn host_guard(
 // Shell + static assets
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn shell() -> Response {
+pub(crate) async fn shell(State(ctx): State<ServerCtx>) -> Response {
+    let device_name = settings_of(&ctx).device_name.clone();
     (
         StatusCode::OK,
         [
@@ -165,7 +166,7 @@ pub(crate) async fn shell() -> Response {
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::REFERRER_POLICY, "no-referrer"),
         ],
-        assets::index_html(),
+        assets::index_html(&device_name),
     )
         .into_response()
 }
@@ -226,11 +227,16 @@ fn binary_asset(body: &'static [u8], mime: &'static str) -> Response {
         .into_response()
 }
 
-pub(crate) async fn manifest() -> Response {
+pub(crate) async fn manifest(State(ctx): State<ServerCtx>) -> Response {
+    let device_name = settings_of(&ctx).device_name.clone();
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/manifest+json")],
-        assets::MANIFEST_JSON,
+        [
+            (header::CONTENT_TYPE, "application/manifest+json"),
+            // Named after the host, so it must not outlive a rename.
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        assets::manifest_json(&device_name),
     )
         .into_response()
 }
@@ -245,7 +251,7 @@ pub(crate) async fn ping(State(ctx): State<ServerCtx>) -> Response {
     Json(json!({
         "app": "lanshare",
         "version": APP_VERSION,
-        "name": settings.server_name,
+        "name": settings.device_name,
         "pinRequired": settings.pin_enabled,
     }))
     .into_response()
@@ -309,7 +315,7 @@ pub(crate) async fn session_info(State(ctx): State<ServerCtx>, request: Request)
         "canUpload": can_upload,
         "thumbnails": settings.thumbnails_enabled,
         "allowZip": settings.allow_folder_zip,
-        "serverName": settings.server_name,
+        "deviceName": settings.device_name,
         "defaultView": settings.default_view_mode,
         "defaultSort": settings.default_sort,
         "version": APP_VERSION,
@@ -1375,11 +1381,11 @@ pub(crate) async fn upload(
 /// The prefix list matters: a malformed `/files/...` or `/zip/...` that fell
 /// through to the shell would hand the client an HTML page under the filename
 /// it asked for, which looks like a successful download and is not.
-pub(crate) async fn fallback(uri: Uri) -> Response {
+pub(crate) async fn fallback(State(ctx): State<ServerCtx>, uri: Uri) -> Response {
     const DATA_PREFIXES: &[&str] = &["/api/", "/files/", "/download/", "/zip/", "/assets/", "/s/"];
     let path = uri.path();
     if DATA_PREFIXES.iter().any(|p| path.starts_with(p)) {
         return json_error(StatusCode::NOT_FOUND, "not_found");
     }
-    shell().await
+    shell(State(ctx)).await
 }

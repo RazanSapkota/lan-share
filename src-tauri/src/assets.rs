@@ -35,9 +35,16 @@ fn disk_override(_rel: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn index_html() -> String {
+/// The shell, with the host's name substituted into `<title>`.
+///
+/// Templated here rather than set from JS so the tab is named before a single
+/// byte of script runs -- and so a visitor who never gets past the PIN screen
+/// still sees which machine they are talking to. `clean_device_name` strips
+/// controls and bidi overrides but not `< > & "`, so this escapes.
+pub(crate) fn index_html(device_name: &str) -> String {
     let raw = disk_override("index.html").unwrap_or_else(|| INDEX_HTML.to_string());
     raw.replace("__REV__", asset_rev())
+        .replace("__NAME__", &crate::utils::escape_html(device_name))
 }
 
 pub(crate) fn app_js() -> String {
@@ -88,19 +95,26 @@ pub(crate) const CSP: &str = "default-src 'self'; \
      form-action 'self'; \
      frame-ancestors 'self'";
 
-pub(crate) const MANIFEST_JSON: &str = r##"{
-  "name": "LAN Share",
-  "short_name": "LAN Share",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#0b0b0d",
-  "theme_color": "#0b0b0d",
-  "icons": [
-    { "src": "/assets/icon.svg", "sizes": "any", "type": "image/svg+xml" },
-    { "src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
-  ]
-}"##;
+/// Named after the host, not the product: a phone that adds two machines to its
+/// home screen would otherwise get two identical "LAN Share" icons with nothing
+/// to tell them apart. Built with `json!` rather than string substitution so the
+/// name is escaped by the serializer.
+pub(crate) fn manifest_json(device_name: &str) -> String {
+    serde_json::json!({
+        "name": device_name,
+        "short_name": device_name,
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0b0b0d",
+        "theme_color": "#0b0b0d",
+        "icons": [
+            { "src": "/assets/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+            { "src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+            { "src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
+        ]
+    })
+    .to_string()
+}
 
 /// The app mark: a folder with two arcs radiating from its top-right corner --
 /// what you share, and who can reach it.

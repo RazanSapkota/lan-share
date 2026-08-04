@@ -26,9 +26,9 @@ use crate::{
     // Devices: pairing and the friends list. Nothing pushes files any more --
     // everything moves because the other side asked for it.
     tasks::{
-        accept_pair_request, add_peer_by_address, decline_pair_request, get_device_identity,
-        list_discovered, list_incoming_pair_requests, list_peers, rename_peer, set_device_name,
-        set_peer_blocked, start_pair_task, unpair_peer,
+        accept_pair_request, add_peer_by_address, decline_pair_request, list_discovered,
+        list_incoming_pair_requests, list_peers, rename_peer, set_peer_blocked, start_pair_task,
+        unpair_peer,
     },
     // Network: reading another device's shares.
     tasks::{
@@ -115,9 +115,6 @@ fn main() {
             get_task_progress,
             clear_task,
             cancel_task,
-            // devices: this one
-            get_device_identity,
-            set_device_name,
             // devices: discovery
             list_discovered,
             add_peer_by_address,

@@ -123,6 +123,27 @@ pub(crate) fn url_encode(value: &str) -> String {
     percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
+/// Escape text being substituted into HTML markup.
+///
+/// The one caller is the device name going into the shell's `<title>`. That
+/// name is user-settable, so without this a `<` closes the title element early
+/// and everything after it is parsed as markup. `'` is escaped as `&#39;`
+/// rather than `&apos;`, which older parsers do not know.
+pub(crate) fn escape_html(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Percent-encode one path segment, keeping the RFC 3986 unreserved set
 /// literal.
 ///

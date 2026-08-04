@@ -1632,7 +1632,7 @@ fn http_serves_the_shell_and_assets_without_auth() {
     let (status, headers, body) = fx.get("/", None);
     assert_eq!(status, StatusCode::OK);
     assert!(headers.contains_key(header::CONTENT_SECURITY_POLICY));
-    assert!(String::from_utf8_lossy(&body).contains("<title>LAN Share</title>"));
+    assert!(String::from_utf8_lossy(&body).contains("<title>TestHost</title>"));
 
     let (status, headers, _) = fx.get("/assets/app.js", None);
     assert_eq!(status, StatusCode::OK);
@@ -1998,6 +1998,12 @@ fn the_manifest_offers_raster_icons_too() {
     assert_eq!(headers[header::CONTENT_TYPE], "application/manifest+json");
 
     let json: serde_json::Value = serde_json::from_slice(&body).expect("manifest is not JSON");
+
+    // Named after the host, not the product: two machines added to one phone's
+    // home screen would otherwise be two identical "LAN Share" icons.
+    assert_eq!(json["name"], "TestHost");
+    assert_eq!(json["short_name"], "TestHost");
+
     let icons = json["icons"].as_array().expect("no icons");
     let sizes: Vec<&str> = icons
         .iter()
@@ -2062,6 +2068,8 @@ fn http_mints_a_session_when_the_pin_is_disabled() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["authenticated"], true);
     assert_eq!(json["pinRequired"], false);
+    // One name, and the browser gets the same one the peers do.
+    assert_eq!(json["deviceName"], "TestHost");
     // The cookie must ride along, or the client would re-mint on every request.
     assert!(headers.contains_key(header::SET_COOKIE));
 
@@ -2360,7 +2368,7 @@ fn http_unknown_api_route_is_404_and_everything_else_serves_the_shell() {
     // the shell rather than 404ing.
     let (status, _, body) = fx.get("/some/deep/link", None);
     assert_eq!(status, StatusCode::OK);
-    assert!(String::from_utf8_lossy(&body).contains("<title>LAN Share</title>"));
+    assert!(String::from_utf8_lossy(&body).contains("<title>TestHost</title>"));
 }
 
 // ===========================================================================
@@ -3445,6 +3453,53 @@ fn normalize_clamps_the_discovery_port() {
     config.discovery_port = config.port;
     config::normalize(&mut config);
     assert_eq!(config.discovery_port, crate::models::DEFAULT_DISCOVERY_PORT);
+}
+
+#[test]
+fn escape_html_neutralises_markup() {
+    use crate::utils::escape_html;
+    // The device name is substituted into the shell's <title>, and it is
+    // user-settable. `clean_device_name` strips controls and bidi overrides but
+    // not these, so without escaping a `<` ends the title element early and the
+    // rest of the name is parsed as markup.
+    assert_eq!(
+        escape_html("</title><script>alert(1)</script>"),
+        "&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;"
+    );
+    assert_eq!(escape_html(r#"a & b "c" 'd'"#), "a &amp; b &quot;c&quot; &#39;d&#39;");
+    // The overwhelmingly common case must pass through untouched.
+    assert_eq!(escape_html("Rajan-PC"), "Rajan-PC");
+}
+
+/// There used to be two names: `server_name` for browsers, `device_name` for
+/// peers. Merging them must not silently discard whichever one the user had
+/// actually bothered to set.
+#[test]
+fn the_retired_server_name_folds_into_the_device_name() {
+    let hostname = crate::models::default_server_name();
+
+    // Only the old browser-facing name was customised -- adopt it.
+    let mut config = AppConfig::default();
+    config.legacy_server_name = Some("OldBrowserName".to_string());
+    config.device_name = hostname.clone();
+    crate::config::normalize(&mut config);
+    assert_eq!(config.device_name, "OldBrowserName");
+    // And it is dropped, so the next save writes it out of the file for good.
+    assert!(config.legacy_server_name.is_none());
+
+    // Both customised -- the one the user thinks of as the device name wins.
+    let mut config = AppConfig::default();
+    config.legacy_server_name = Some("OldBrowserName".to_string());
+    config.device_name = "ChosenName".to_string();
+    crate::config::normalize(&mut config);
+    assert_eq!(config.device_name, "ChosenName");
+
+    // A hostile old value is cleaned on the way across, not adopted verbatim.
+    let mut config = AppConfig::default();
+    config.legacy_server_name = Some("evil\u{202E}txt.exe".to_string());
+    config.device_name = hostname.clone();
+    crate::config::normalize(&mut config);
+    assert_eq!(config.device_name, "eviltxt.exe");
 }
 
 #[test]

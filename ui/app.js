@@ -279,7 +279,10 @@ function applyConfigToUi() {
 
   $("set-port").value = c.port;
   $("set-bind").value = c.bind_address;
-  $("set-name").value = c.server_name || "";
+  $("set-name").value = c.device_name || "";
+  // Connections shows the same value read-only, so it refreshes from here
+  // rather than keeping a copy that could drift.
+  renderSelfName();
   $("set-autoport").checked = !!c.auto_port;
   $("set-autostart").checked = !!c.autostart_server;
   $("set-keepawake").checked = !!c.keep_awake;
@@ -310,7 +313,7 @@ function readConfigFromUi() {
   const c = Object.assign({}, state.config);
   c.port = parseIntOr($("set-port").value, 8080);
   c.bind_address = $("set-bind").value;
-  c.server_name = $("set-name").value.trim();
+  c.device_name = $("set-name").value.trim();
   c.auto_port = $("set-autoport").checked;
   c.autostart_server = $("set-autostart").checked;
   c.keep_awake = $("set-keepawake").checked;
@@ -400,7 +403,7 @@ const PAGE_ENTER = {
   dashboard: () => {
     refreshServerStatus();
     renderDashboard();
-    loadIdentity();
+    renderSelfName();
     startDevicesTick();
   },
   shares: () => loadShares(),
@@ -1397,8 +1400,6 @@ async function boot() {
   await refreshServerStatus();
   await loadFirewallHint();
 
-  await loadIdentity();
-
   switchPage("dashboard");
   startServerPoll();
   // Pair requests and file offers must be noticed from any page, so this
@@ -1430,7 +1431,6 @@ const WATCH_TICK_MS = 2000;
 const PAIR_ACCEPT_ARM_MS = 1500;
 
 state.devices = {
-  self: null,
   // `running` means we are announcing (they can see us); `listening` means the
   // socket is up (we can see them). Going invisible only stops the first.
   discovery: { running: false, listening: false, health: "ok", error: null, devices: [] },
@@ -1544,13 +1544,11 @@ function updateDevicesBadge(count) {
 
 // --- this device -----------------------------------------------------------
 
-async function loadIdentity() {
-  const identity = await callQuiet("get_device_identity");
-  if (!identity) return;
-  state.devices.self = identity;
-
-  // Do not stomp on the field while it is being edited.
-  if (document.activeElement !== $("self-name")) $("self-name").value = identity.name;
+/// Read-only. `save_config` is the only writer, so this reads the same
+/// `state.config` every Settings field does -- no second source to drift.
+function renderSelfName() {
+  const name = (state.config && state.config.device_name) || "—";
+  $("self-name").textContent = name;
 }
 
 // --- discovered ------------------------------------------------------------
@@ -1966,17 +1964,9 @@ async function onDeviceAction(event) {
 function wireDevices() {
   $("devices-list").addEventListener("click", onDeviceAction);
 
-  $("self-name-save").addEventListener("click", async () => {
-    const name = $("self-name").value.trim();
-    if (!name) return;
-    try {
-      await call("set_device_name", { name });
-      showToast("Renamed to " + name, "success");
-      loadIdentity();
-    } catch (_err) {
-      /* already reported */
-    }
-  });
+  // The name is one setting used in two directions, so it is edited where
+  // every other setting is, and this only points at it.
+  $("self-name-edit").addEventListener("click", () => switchPage("settings"));
 
   // --- pairing dialogs ---
   $("pair-out-cancel").addEventListener("click", cancelPairing);

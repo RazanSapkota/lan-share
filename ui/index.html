@@ -237,22 +237,24 @@
                  Everything below is how you reach them.
                  ================================================== -->
 
-            <!-- This device. The name only: the visibility pill used to live
-                 here reporting the state of a switch that was on another page,
-                 and the address repeated #lan-url. Both are a few hundred
-                 pixels up now, so both are gone. -->
+            <!-- This device, read-only. The name is one setting used in two
+                 directions -- phones see it as the page title, peers see it in
+                 their list -- so it is edited in one place, Settings, and shown
+                 here because this is the page where it matters. -->
             <article class="card">
               <div class="self-card">
                 <div class="self-icon"><span class="material-symbols-outlined">computer</span></div>
                 <div class="self-body">
                   <div class="self-row">
-                    <input id="self-name" class="self-name" type="text" maxlength="48"
-                           aria-label="This device's name"
-                           data-tip="What this computer calls itself on the network. Other devices show this name in their list." />
-                    <button id="self-name-save" class="ghost-button" type="button"
-                            data-tip="Save the name above. Other devices pick it up within a few seconds.">Rename</button>
+                    <span class="self-name-text" id="self-name"
+                          data-tip="What this computer calls itself: the title a phone sees in its browser, and the name other computers show in their list.">—</span>
                   </div>
                 </div>
+                <button id="self-name-edit" class="ghost-button" type="button"
+                        data-tip="Change the name in Settings. Phones and other computers pick it up within a few seconds.">
+                  <span class="material-symbols-outlined">edit</span>
+                  <span>Change in Settings</span>
+                </button>
               </div>
             </article>
 
@@ -496,9 +498,9 @@
                     </select>
                   </div>
                   <div class="path-row">
-                    <label class="path-label" for="set-name">Server name</label>
+                    <label class="path-label" for="set-name">Device name</label>
                     <input id="set-name" type="text"
-                           data-tip="The title shown at the top of the page visitors see in their browser." />
+                           data-tip="What this computer calls itself, everywhere: the title a phone sees in its browser, and the name other computers running LAN Share show in their list. They pick up a change within a few seconds." />
                   </div>
                 </div>
                 <div class="settings-toggle-stack">
