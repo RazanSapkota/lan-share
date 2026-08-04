@@ -107,8 +107,7 @@ succeeds.
 
 ```
 ui/                        desktop control panel  (frontendDist, Tauri webview)
-tools/icon-source.png      the artwork every icon is cut from
-tools/make-icons.mjs       that png -> png/ico/icns        (run by hand)
+tools/make-icons.mjs       draws the app mark -> png/ico/icns (run by hand)
 tools/set-version.mjs      one version -> all four manifests (run by hand)
 src-tauri/
   icons/                   window, taskbar, favicon and manifest icons
@@ -157,35 +156,62 @@ no internet access at all — only a route to this host.
 
 ## Notes on a few decisions
 
-**The icons are derived, not committed by hand.** `tools/icon-source.png` is the
-artwork; `tools/make-icons.mjs` cuts every other size from it and writes each
-PNG, the `.ico` and the `.icns` using nothing but Node's `zlib` — PNG, ICO and
-ICNS are all simple enough containers to emit by hand, and that beats adding an
-image toolchain to a project whose whole boast is not having one. Delete
-`src-tauri/icons/` and one command puts it back.
+**The icons are drawn, not committed.** There is no source bitmap — only the
+fifteen-odd numbers at the top of `tools/make-icons.mjs`, which draws the mark
+and writes every PNG, the `.ico` and the `.icns` using nothing but Node's `zlib`.
+PNG, ICO and ICNS are all simple enough containers to emit by hand, and that
+beats adding an image toolchain to a project whose whole boast is not having one.
+Delete `src-tauri/icons/` and one command puts it back, byte for byte.
 
-The source is an 800px squircle that fills its canvas, so the crop-to-alpha-
-bounds step is a no-op on it — it is there because the artwork before this one
-sat 839px inside a 1024 canvas, and that padding made every icon render a size
-smaller than its neighbours in the taskbar. The box filter still earns its keep
-at the corners: it weights colour by alpha rather than averaging samples, and
-the transparent pixels outside the squircle are pure black, so a straight
-average would draw a dark fringe around all four of them.
+Each size is drawn *at* its size rather than downscaled from one large bitmap,
+and that is the whole point. The mark before this one was an 800px PNG reduced to
+all twelve sizes; at the 24px Windows actually draws in the taskbar that is a
+50:1 reduction, and the wires came out **0.84 device pixels** wide. No filter can
+draw a 0.84px line — it can only fade it to grey, which is what "blurry icon"
+had actually been. Drawing per size means a stroke can land on a whole pixel, and
+that detail which will not fit can be *dropped* instead of smeared:
 
-**There is one mark, and it is that file.** The window header, the PIN screen
-and the tab icon all show it: `ui/icon.png` for the desktop panel (which can
-only read files under `frontendDist`), `/assets/icon-192.png` for the guest
-page, where one fetch serves both the tab and the PIN screen. They used to be
-inline SVG — a hand-drawn folder with two arcs, in `currentColor` so it followed
-the theme — which was quietly a different logo from the one on the taskbar.
+```
+16/20                       disc + play
+24/32/40                    disc + nodes + play
+48 and up                   disc + nodes + wires + play
+```
+
+Shapes are signed distance fields sampled 4×4 per pixel, and everything composites
+premultiplied **in linear light**. That second part is not pedantry: blending
+sRGB bytes directly biases every antialiased edge dark — a pixel a quarter navy
+over cyan lands at luminance 60 where it belongs at 96 — and at 16px almost every
+pixel is an edge. `--check` asserts the two transfer functions invert each other,
+that the disc is symmetric under both mirrors, that no feature was faded instead
+of dropped, and that the mark covers π/4 of its canvas.
+
+**The mark is a cyan disc, and it used to be a navy square.** Inverting it fixed
+two measured problems at once. The old navy plate was **1.02:1** against a dark
+Windows taskbar — it was not blurry, it was invisible, and what anyone saw was
+the mark floating on nothing. And a filled squircle covers 95.8% of its canvas
+where a circle covers 78.5%, so it also read a size larger than every icon beside
+it; Chrome's shipped icon measures 78.1%. Navy on cyan is 10:1, which holds on a
+dark taskbar, on Explorer's white and on the installer's white alike. The play
+symbol is an opaque fill and not a knockout for the same reason: a hole shows
+whatever is behind the icon, which is 9.4:1 on dark but 1.81:1 on white.
+
+**There is one mark, and everything shows the same one.** The window header, the
+PIN screen and the tab icon all draw it: `ui/icon.png` for the desktop panel
+(which can only read files under `frontendDist`), `/assets/icon-192.png` for the
+guest page, where one fetch serves both the tab and the PIN screen. They used to
+be inline SVG — a hand-drawn folder with two arcs, in `currentColor` so it
+followed the theme — which was quietly a different logo from the one on the
+taskbar.
 
 The `.ico` carries ten sizes, not the usual handful, because a missing size is
 not a missing icon — the shell scales a neighbour instead, and that upscale is
-what "blurry icon" actually is. 16/20/24/32 for lists and the title bar, 40 at
-125% DPI, 48/64 for the taskbar and Alt-Tab, 96/128/256 for Explorer. Entries
-below 64px are uncompressed DIBs and the rest are PNG, which is what keeps the
-file at 54 KB: the same ten sizes as DIBs throughout would be 409 KB, because a
-DIB costs `w × h × 4` whatever is drawn on it — the 256 alone is 264 KB.
+the other thing "blurry icon" turns out to mean. 16/20/24/32 for lists and the
+title bar, 40 at 125% DPI, 48/64 for the taskbar and Alt-Tab, 96/128/256 for
+Explorer. Each is drawn at its own size, which is why the 16 has fewer elements
+on it than the 256. Entries below 64px are uncompressed DIBs and the rest are
+PNG, which is what keeps the file at 43 KB: the same ten sizes as DIBs throughout
+would be 409 KB, because a DIB costs `w × h × 4` whatever is drawn on it — the
+256 alone is 264 KB.
 
 **`build.rs` watches the icons, and has to.** `tauri_build` compiles
 `icons/icon.ico` into a Windows resource, but the only path it registers with

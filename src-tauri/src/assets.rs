@@ -115,7 +115,7 @@ pub(crate) fn manifest_json(device_name: &str) -> String {
     .to_string()
 }
 
-/// The app mark, cut from `tools/icon-source.png` by `tools/make-icons.mjs`.
+/// The app mark, drawn at each size by `tools/make-icons.mjs`.
 ///
 /// A hand-drawn SVG of a folder and two arcs used to be served beside these,
 /// standing in for artwork it did not resemble -- the guest page showed the
