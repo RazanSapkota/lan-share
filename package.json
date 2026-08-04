@@ -7,6 +7,7 @@
   "scripts": {
     "tauri:dev": "cargo run --manifest-path src-tauri/Cargo.toml",
     "tauri:build": "cargo build --release --manifest-path src-tauri/Cargo.toml",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "version:set": "node tools/set-version.mjs"
   }
 }

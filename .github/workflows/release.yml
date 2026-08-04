@@ -24,20 +24,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Three files carry the version and nothing keeps them in step. Failing
-      # here costs 20 seconds; failing to notice ships an installer whose
-      # "Add or remove programs" entry disagrees with the release it came from.
+      # Four files carry the version. `npm run version:set` writes all four, so
+      # in practice this now catches a forgotten bump rather than a partial one
+      # -- but it checks each file separately anyway, because a file left behind
+      # is evidence the script was not what wrote them. Failing here costs 20
+      # seconds; failing to notice ships an installer whose "Add or remove
+      # programs" entry disagrees with the release it came from.
       - name: Check the tag matches the version in the manifests
         if: github.event_name == 'release'
         shell: pwsh
         run: |
           $tag = "${{ github.event.release.tag_name }}" -replace '^v', ''
-          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
-                    Select-Object -First 1).Matches[0].Groups[1].Value
-          Write-Host "tag=$tag  tauri.conf.json=$conf  Cargo.toml=$cargo"
-          if ($tag -ne $conf -or $tag -ne $cargo) {
-            throw "Version mismatch. Set src-tauri/tauri.conf.json and src-tauri/Cargo.toml to $tag, push, then re-publish the release."
+
+          # Only the first two decide what ships: Cargo.toml is CARGO_PKG_VERSION,
+          # which the app reports to peers and browsers, and tauri.conf.json is
+          # the Windows version resource -- tauri-build reads that field and has
+          # no Cargo.toml fallback for it.
+          $lockLine = (Select-String src-tauri/Cargo.lock -Pattern '^name = "lan_share_tauri"' -Context 0, 1 |
+                       Select-Object -First 1).Context.PostContext[0]
+
+          $found = [ordered]@{
+            'src-tauri/Cargo.toml'      = (Select-String src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"' |
+                                           Select-Object -First 1).Matches[0].Groups[1].Value
+            'src-tauri/tauri.conf.json' = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+            'src-tauri/Cargo.lock'      = ([regex]'"([^"]+)"').Match($lockLine).Groups[1].Value
+            'package.json'              = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          }
+
+          $found.GetEnumerator() | ForEach-Object { Write-Host ("{0,-28} {1}" -f $_.Key, $_.Value) }
+          Write-Host ("{0,-28} {1}" -f 'tag', $tag)
+
+          $wrong = @($found.GetEnumerator() | Where-Object { $_.Value -ne $tag } | ForEach-Object { $_.Key })
+          if ($wrong) {
+            throw "Version mismatch in: $($wrong -join ', '). Run 'npm run version:set -- $tag', commit, push, then re-publish the release."
           }
 
       - uses: dtolnay/rust-toolchain@stable

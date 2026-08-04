@@ -71,6 +71,24 @@ npm test               # cargo test  (158 tests)
 There is no frontend build step — `ui/` is served straight from disk by Tauri,
 and `src-tauri/web/` is compiled into the binary with `include_str!`.
 
+### Cutting a release
+
+```sh
+npm run version:set -- 0.4.0   # writes all four manifests
+git commit -am "chore: bump version to 0.4.0 for release" && git push
+```
+
+Then **Releases → Draft a new release**, tag `v0.4.0` against `main`, publish.
+The workflow builds the tag and attaches the installer and the portable exe.
+
+Four files carry the number and only two of them matter: `Cargo.toml` is
+`CARGO_PKG_VERSION`, which the app reports to peers and browsers, and
+`tauri.conf.json` is the Windows version resource — `tauri-build` reads that
+field and has no `Cargo.toml` fallback for it, so removing it would leave the
+exe with a blank *File version* in Properties. `Cargo.lock` would be rewritten
+by the next cargo command anyway; `package.json`'s copy is read by nothing.
+The workflow refuses to build when any of the four disagrees with the tag.
+
 ### First run
 
 1. **Shares** → *Add folder*.
@@ -91,6 +109,7 @@ succeeds.
 ui/                        desktop control panel  (frontendDist, Tauri webview)
 tools/icon-source.png      the artwork every icon is cut from
 tools/make-icons.mjs       that png -> png/ico/icns        (run by hand)
+tools/set-version.mjs      one version -> all four manifests (run by hand)
 src-tauri/
   icons/                   window, taskbar, favicon and manifest icons
   web/                     receiver web app       (include_str!'d into the exe)
