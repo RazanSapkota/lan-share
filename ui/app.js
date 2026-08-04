@@ -436,6 +436,7 @@ function switchPage(page) {
 
   if (target !== "activity") stopActivityPoll();
   if (target !== "devices") stopDevicesTick();
+  if (target !== "network") stopNetworkTick();
   const enter = PAGE_ENTER[target];
   if (enter) enter();
 }
@@ -1543,8 +1544,7 @@ async function refreshDevices() {
   if (discovery) state.devices.discovery = discovery;
   if (Array.isArray(peers)) state.devices.peers = peers;
 
-  renderDiscovered();
-  renderPeers();
+  renderNetworkList();
   renderDiscoveryNotice();
   renderPresence();
 }
@@ -1617,20 +1617,149 @@ function dedupeDiscovered(list) {
   return [...byId.values()];
 }
 
-function renderDiscovered() {
-  const host = $("nearby-list");
+/// Connected first, then whatever else the network is announcing, then the ones
+/// you have disconnected from. Sorting by name inside a group stops rows
+/// swapping places every time presence flickers.
+const NETWORK_ORDER = { connected: 0, saved: 1, available: 2, away: 3, disconnected: 4 };
+
+/// One list out of two sources, the way a Wi-Fi panel shows saved and in-range
+/// networks together rather than in separate tables. `peers` is what we are
+/// connected to and wins for any device in both; discovery supplies the rest.
+///
+/// Where this parts company with Wi-Fi: "connected" is a per-row state, not one
+/// highlighted entry. There is no reason to be on only one of these at a time,
+/// and being on several at once is the ordinary case.
+function networkRows() {
+  const peers = state.devices.peers || [];
+  const known = new Set(peers.map((p) => p.device_id));
+
+  const rows = peers.map((p) => ({
+    id: p.device_id,
+    name: p.name,
+    platform: p.platform,
+    addresses: p.address ? [p.address] : [],
+    lastSeenMs: p.last_seen_ms,
+    online: !!p.online,
+    manual: false,
+    state: p.blocked ? "disconnected" : p.online ? "connected" : "saved",
+  }));
+
+  for (const d of dedupeDiscovered(state.devices.discovery.devices || [])) {
+    if (known.has(d.device_id) || d.paired) continue;
+    rows.push({
+      id: d.device_id,
+      name: d.name || d.device_id,
+      platform: d.platform,
+      addresses: d.addresses || [],
+      lastSeenMs: d.last_seen_ms,
+      online: !!d.online,
+      manual: !!d.manual,
+      state: d.online ? "available" : "away",
+    });
+  }
+
+  return rows.sort(
+    (a, b) => NETWORK_ORDER[a.state] - NETWORK_ORDER[b.state] || a.name.localeCompare(b.name)
+  );
+}
+
+/// What the row says about itself, in the same words as its buttons.
+function networkStatusHtml(row) {
+  const chip = (cls, text) =>
+    `<span class="share-status ${cls}"><span class="share-status-dot"></span>${text}</span>`;
+  const seen = (label) =>
+    `<span>${label} ${escapeHtml(relativeTime(row.lastSeenMs))}</span>`;
+
+  switch (row.state) {
+    case "connected":
+      return chip("is-live", "Connected");
+    case "saved":
+      return chip("is-off", "Connected") + seen("asleep, seen");
+    case "available":
+      return chip("is-live", "Available");
+    case "away":
+      return chip("is-off", "Not answering") + seen("seen");
+    default:
+      return chip("is-blocked", "Disconnected");
+  }
+}
+
+/// One obvious primary action per row, plus the bookkeeping behind it. The
+/// wiring is untouched -- `data-dev` still names the backend command, so only
+/// the words the user reads have moved to Wi-Fi's.
+function networkActionsHtml(row, id) {
+  const forget = `<button class="icon-button" type="button" data-dev="unpair" data-id="${id}" aria-label="Forget"
+                data-tip="Forget this device completely. Nothing is deleted, but you would both have to connect again from scratch.">
+          <span class="material-symbols-outlined">link_off</span>
+        </button>`;
+
+  if (row.state === "disconnected") {
+    return `<span class="device-actions">
+        <button class="ghost-button" type="button" data-dev="unblock" data-id="${id}"
+                data-tip="Start talking to this device again. It stayed connected throughout -- disconnecting never lost that.">Reconnect</button>
+        ${forget}
+      </span>`;
+  }
+
+  if (row.state === "connected" || row.state === "saved") {
+    return `<span class="device-actions">
+        <button class="ghost-button" type="button" data-dev="block" data-id="${id}"
+                data-tip="Stop traffic in both directions. The connection is kept, so reconnecting is one click and no code.">Disconnect</button>
+        <button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
+                data-tip="Rename this device in your list. Only you see the new name.">
+          <span class="material-symbols-outlined">edit</span>
+        </button>
+        ${forget}
+      </span>`;
+  }
+
+  // The tip sits on the wrapper while the button is disabled: a disabled button
+  // is inert and never sees the pointer, so a tip on it would be silent in
+  // exactly the case that needs explaining.
+  return `<span class="device-actions"${row.online ? "" : ' data-tip="This device has gone quiet, so there is nothing to connect to. It comes back on its own within seconds of reappearing."'}>
+        <button class="primary-button" type="button" data-dev="pair" data-id="${id}" ${row.online ? "" : "disabled"}
+                data-tip="Connect to this device. Both screens then show the same six digits -- check they match, then accept on the other one.">
+          <span class="material-symbols-outlined">link</span>
+          <span>Connect</span>
+        </button>
+      </span>`;
+}
+
+function networkRowHtml(row) {
+  const id = escapeHtml(row.id);
+  const extra = row.addresses.length > 1
+    ? `<span class="badge" data-tip="This device answers on more than one address: ${escapeHtml(row.addresses.join(", "))}. Usually Wi-Fi and Ethernet at once.">+${row.addresses.length - 1} more</span>`
+    : "";
+  const manual = row.manual
+    ? '<span class="badge" data-tip="You typed this one in rather than hearing it. It is never dropped from the list automatically.">Added by hand</span>'
+    : "";
+
+  return `
+      <div class="device-row ${row.online ? "is-online" : ""} ${row.state === "disconnected" ? "is-blocked" : ""}">
+        <span class="device-icon"><span class="material-symbols-outlined">${deviceIcon(row.platform)}</span></span>
+        <span class="device-body">
+          <span class="device-name">${escapeHtml(row.name)}</span>
+          <span class="device-sub">
+            ${networkStatusHtml(row)}
+            <span class="mono">${escapeHtml(row.addresses[0] || "")}</span>
+            ${extra}
+            ${manual}
+          </span>
+        </span>
+        ${networkActionsHtml(row, id)}
+      </div>`;
+}
+
+function renderNetworkList() {
+  const host = $("devices-list");
   const radar = $("radar");
   // Scanning is about the ear, not the mouth: a hidden device still hears
   // every beacon on the network, so the radar keeps sweeping while it does.
   const listening = state.devices.discovery.listening;
   radar.classList.toggle("is-scanning", listening);
 
-  // Already-paired devices belong in the list below. Showing them in both
-  // invites re-pairing something already trusted.
-  const rows = dedupeDiscovered(state.devices.discovery.devices || []).filter(
-    (d) => !d.paired
-  );
-  $("nearby-count").textContent = rows.length;
+  const rows = networkRows();
+  $("devices-count").textContent = rows.length;
 
   if (!rows.length) {
     // Three states, not two. Being hidden does not stop the search, so saying
@@ -1654,39 +1783,7 @@ function renderDiscovered() {
     return;
   }
 
-  host.innerHTML = rows
-    .map((d) => {
-      const extra = d.addresses.length > 1
-        ? `<span class="badge" data-tip="This device answers on more than one address: ${escapeHtml(d.addresses.join(", "))}. Usually Wi-Fi and Ethernet at once.">+${d.addresses.length - 1} more</span>`
-        : "";
-      return `
-      <div class="device-row ${d.online ? "is-online" : ""}">
-        <span class="device-icon"><span class="material-symbols-outlined">${deviceIcon(d.platform)}</span></span>
-        <span class="device-body">
-          <span class="device-name">${escapeHtml(d.name || d.device_id)}</span>
-          <span class="device-sub">
-            <span class="share-status ${d.online ? "is-live" : "is-off"}">
-              <span class="share-status-dot"></span>${d.online ? "Online" : relativeTime(d.last_seen_ms)}
-            </span>
-            <span class="mono">${escapeHtml(d.addresses[0] || "")}</span>
-            ${extra}
-            ${d.manual ? '<span class="badge" data-tip="You typed this one in rather than hearing it. It is never dropped from the list automatically.">Added by hand</span>' : ""}
-          </span>
-        </span>
-        <span class="device-auto is-hidden-soft"></span>
-        <!-- The tip sits on the wrapper while the button is disabled: a
-             disabled button is inert and never sees the pointer, so a tip on
-             it would be silent in exactly the case that needs explaining. -->
-        <span class="device-actions"${d.online ? "" : ' data-tip="This device has gone quiet, so there is nothing to pair with. It comes back on its own within seconds of reappearing."'}>
-          <button class="primary-button" type="button" data-dev="pair" data-id="${escapeHtml(d.device_id)}" ${d.online ? "" : "disabled"}
-                  data-tip="Ask this device to pair. Both screens then show the same six digits — check they match, then accept on the other one.">
-            <span class="material-symbols-outlined">link</span>
-            <span>Pair</span>
-          </button>
-        </span>
-      </div>`;
-    })
-    .join("");
+  host.innerHTML = rows.map(networkRowHtml).join("");
 }
 
 function renderDiscoveryNotice() {
@@ -1722,82 +1819,6 @@ function renderDiscoveryNotice() {
   notice.classList.remove("hidden");
 }
 
-// --- paired ----------------------------------------------------------------
-
-function renderPeers() {
-  const host = $("paired-list");
-  const rows = state.devices.peers;
-  $("paired-count").textContent = rows.length;
-
-  if (!rows.length) {
-    host.innerHTML = `
-      <div class="device-empty">
-        <span class="material-symbols-outlined">devices_other</span>
-        <span class="device-empty-title">No paired devices yet</span>
-        <span class="device-empty-body">Pair with a device above. You only do this once per
-          device — after that you can send files straight to it.</span>
-      </div>`;
-    return;
-  }
-
-  host.innerHTML = rows.map(peerRowHtml).join("");
-}
-
-function peerRowHtml(p) {
-  const id = escapeHtml(p.device_id);
-  const status = p.blocked
-    ? '<span class="share-status is-blocked"><span class="share-status-dot"></span>Blocked</span>'
-    : p.online
-      ? '<span class="share-status is-live"><span class="share-status-dot"></span>Online</span>'
-      : `<span class="share-status is-off"><span class="share-status-dot"></span>${relativeTime(p.last_seen_ms)}</span>`;
-
-  // A blocked device keeps its row and its unblock button. Hiding it would
-  // make the only route to undoing a block "remember that you did it".
-  const actions = p.blocked
-    ? `<button class="ghost-button" type="button" data-dev="unblock" data-id="${id}"
-               data-tip="Let this device talk to you again. It stays paired throughout — blocking never lost the pairing.">Unblock</button>
-       <button class="icon-button" type="button" data-dev="unpair" data-id="${id}" aria-label="Unpair"
-               data-tip="Forget this device entirely. You would both have to pair again from scratch.">
-         <span class="material-symbols-outlined">link_off</span>
-       </button>`
-    : `<button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
-               data-tip="Rename this device in your list. Only you see the new name.">
-         <span class="material-symbols-outlined">edit</span>
-       </button>
-       <button class="icon-button" type="button" data-dev="block" data-id="${id}" aria-label="Block"
-               data-tip="Refuse everything from this device. It stays in the list, so you can undo it later.">
-         <span class="material-symbols-outlined">block</span>
-       </button>
-       <button class="icon-button" type="button" data-dev="unpair" data-id="${id}" aria-label="Unpair"
-               data-tip="Forget this device. Nothing is deleted, but you would both have to pair again.">
-         <span class="material-symbols-outlined">link_off</span>
-       </button>`;
-
-  return `
-    <div class="device-row ${p.online ? "is-online" : ""} ${p.blocked ? "is-blocked" : ""}">
-      <span class="device-icon"><span class="material-symbols-outlined">${deviceIcon(p.platform)}</span></span>
-      <span class="device-body">
-        <span class="device-name">${escapeHtml(p.name)}</span>
-        <span class="device-sub">
-          ${status}
-          <span class="mono">${escapeHtml(p.address || "")}</span>
-        </span>
-      </span>
-      <span class="device-auto ${p.blocked ? "is-hidden-soft" : ""}">
-        <span class="device-auto-label">Always accept</span>
-        <button class="switch ${p.auto_accept ? "is-on" : ""}" type="button"
-                data-dev="auto" data-id="${id}" role="switch"
-                aria-checked="${p.auto_accept}" aria-label="Always accept files from ${escapeHtml(p.name)}"
-                data-tip="${p.auto_accept ? "Go back to asking before files from this device are saved." : "Save files from this device without prompting. Only do this for a device you own."}"></button>
-      </span>
-      <!-- Every action left here is bookkeeping — renaming, blocking, unpairing
-           — and all of it works against a device that is asleep. Nothing greys
-           out on offline any more, so the row needs no wrapper tip to explain a
-           disabled button. -->
-      <span class="device-actions">${actions}</span>
-    </div>`;
-}
-
 // --- transfers -------------------------------------------------------------
 
 // --- outgoing pairing ------------------------------------------------------
@@ -1826,7 +1847,7 @@ async function startPairing(deviceId) {
     while (true) {
       await sleep(TASK_POLL_MS);
       const payload = await callQuiet("get_task_progress", { taskId: handle.id });
-      if (!payload) throw new Error("lost contact with the pairing");
+      if (!payload) throw new Error("lost contact while connecting");
 
       const result = payload.pair_result;
       if (result && result.code) {
@@ -1853,8 +1874,8 @@ function finishPairing(result, fallbackName) {
   const status = result ? result.status : "error";
   if (status === "accepted") {
     $("pair-out-backdrop").classList.add("hidden");
-    showToast("Paired with " + (result.peer_name || fallbackName), "success");
-    addLog("Paired with " + (result.peer_name || fallbackName));
+    showToast("Connected to " + (result.peer_name || fallbackName), "success");
+    addLog("Connected to " + (result.peer_name || fallbackName));
     refreshDevices();
     return;
   }
@@ -1867,7 +1888,7 @@ function finishPairing(result, fallbackName) {
           ? "Cancelled"
           : result && result.message
             ? result.message
-            : "Pairing failed";
+            : "Could not connect";
   $("pair-out-message").textContent = message;
   $("pair-out-message").classList.add("is-bad");
 }
@@ -1921,8 +1942,8 @@ async function answerIncomingPair(accept) {
   try {
     if (accept) {
       const name = await call("accept_pair_request", { pairId });
-      showToast("Paired with " + name, "success");
-      addLog("Paired with " + name);
+      showToast("Connected to " + name, "success");
+      addLog("Connected to " + name);
     } else {
       await call("decline_pair_request", { pairId });
     }
@@ -1951,9 +1972,9 @@ async function onDeviceAction(event) {
     case "block": {
       if (!peer) return;
       const ok = await confirmDialog(
-        "Block " + peer.name + "?",
-        "It stays in your list so you can unblock it later, but it will not be able to browse your shares.",
-        "Block"
+        "Disconnect from " + peer.name + "?",
+        "It stays in your list and reconnecting takes one click — no six-digit code again. Until then neither of you can browse the other's shares.",
+        "Disconnect"
       );
       if (!ok) return;
       await callQuiet("set_peer_blocked", { deviceId: id, blocked: true });
@@ -1965,9 +1986,9 @@ async function onDeviceAction(event) {
     case "unpair": {
       if (!peer) return;
       const ok = await confirmDialog(
-        "Unpair " + peer.name + "?",
-        "Nothing is deleted. You will both need to pair again before you can send files to each other.",
-        "Unpair"
+        "Forget " + peer.name + "?",
+        "Nothing is deleted. You will both have to connect again, six-digit code and all, before either can browse the other.",
+        "Forget"
       );
       if (!ok) return;
       await callQuiet("unpair_peer", { deviceId: id });
@@ -1989,8 +2010,7 @@ async function onDeviceAction(event) {
 // --- wiring ----------------------------------------------------------------
 
 function wireDevices() {
-  $("nearby-list").addEventListener("click", onDeviceAction);
-  $("paired-list").addEventListener("click", onDeviceAction);
+  $("devices-list").addEventListener("click", onDeviceAction);
 
   $("self-name-save").addEventListener("click", async () => {
     const name = $("self-name").value.trim();
@@ -2071,6 +2091,10 @@ function wireDevices() {
 //     machinery share indexing uses.
 
 const NET_DOWNLOAD_POLL_MS = 400;
+/// Presence only. The peer list is what tells us a device is asleep, so it has
+/// to stay true while you sit here — otherwise the dropdown lies about who is
+/// online and the offline card never clears itself.
+const NET_PRESENCE_TICK_MS = 2500;
 
 state.network = {
   deviceId: "",
@@ -2086,42 +2110,102 @@ state.network = {
   selected: new Set(),
   loading: false,
   error: "",
+  // Set when the selected device is known to be asleep. Distinct from `error`:
+  // nothing was attempted, so there is nothing to report going wrong.
+  offline: false,
   downloads: [],
   viewerIndex: -1,
+  tickTimer: null,
 };
 
 async function enterNetwork() {
   const peers = await callQuiet("list_peers");
   if (Array.isArray(peers)) state.devices.peers = peers;
-  renderNetDevices();
 
-  const usable = netUsableDevices();
-  if (!usable.some((p) => p.device_id === state.network.deviceId)) {
-    state.network.deviceId = usable.length ? usable[0].device_id : "";
-    state.network.shareId = null;
-    state.network.path = "";
-  }
-  $("net-device").value = state.network.deviceId;
+  reconcileNetDevice();
+  renderNetDevices();
   loadNetListing();
+  startNetworkTick();
 }
 
 function netUsableDevices() {
   return state.devices.peers.filter((p) => !p.blocked);
 }
 
+function netSelectedPeer() {
+  return state.devices.peers.find((p) => p.device_id === state.network.deviceId) || null;
+}
+
+/// Keep `deviceId` pointing at a device that still exists and is not blocked.
+/// Returns whether the selection had to move, so callers know the path they
+/// were showing belongs to a different machine now.
+function reconcileNetDevice() {
+  const usable = netUsableDevices();
+  if (usable.some((p) => p.device_id === state.network.deviceId)) return false;
+
+  state.network.deviceId = usable.length ? usable[0].device_id : "";
+  state.network.shareId = null;
+  state.network.path = "";
+  state.network.selected.clear();
+  return true;
+}
+
 function renderNetDevices() {
   const select = $("net-device");
   const usable = netUsableDevices();
-  select.innerHTML = usable.length
-    ? usable
-        .map(
-          (p) =>
-            '<option value="' + escapeHtml(p.device_id) + '">' +
-            escapeHtml(p.name) + (p.online ? "" : " (offline)") + "</option>"
-        )
-        .join("")
-    : '<option value="">No paired devices</option>';
+
+  // Reassigning innerHTML on every tick would collapse the dropdown while it is
+  // open, so rebuild only when the list genuinely reads differently. Compared
+  // by signature rather than by innerHTML, because reading innerHTML back gives
+  // the browser's own serialization, not the string we wrote.
+  const signature = usable
+    .map((p) => p.device_id + " " + p.name + " " + (p.online ? "1" : "0"))
+    .join("");
+
+  if (select.dataset.signature !== signature) {
+    select.innerHTML = usable.length
+      ? usable
+          .map(
+            (p) =>
+              '<option value="' + escapeHtml(p.device_id) + '">' +
+              escapeHtml(p.name) + (p.online ? "" : " (offline)") + "</option>"
+          )
+          .join("")
+      : '<option value="">No connected devices</option>';
+    select.dataset.signature = signature;
+  }
+
+  if (select.value !== state.network.deviceId) select.value = state.network.deviceId;
   select.disabled = !usable.length;
+}
+
+// --- presence --------------------------------------------------------------
+
+function startNetworkTick() {
+  stopNetworkTick();
+  state.network.tickTimer = setInterval(refreshNetPresence, NET_PRESENCE_TICK_MS);
+}
+
+function stopNetworkTick() {
+  if (state.network.tickTimer) clearInterval(state.network.tickTimer);
+  state.network.tickTimer = null;
+}
+
+/// One `list_peers` per tick, for presence alone -- never a listing. Re-fetches
+/// only when the footing changes: the device woke up, went to sleep, or the
+/// selection had to move. Otherwise a poll would replace a listing already on
+/// screen with an identical one.
+async function refreshNetPresence() {
+  const peers = await callQuiet("list_peers");
+  if (!Array.isArray(peers)) return;
+  state.devices.peers = peers;
+
+  const moved = reconcileNetDevice();
+  renderNetDevices();
+
+  const peer = netSelectedPeer();
+  const offlineNow = !!peer && !peer.online;
+  if (moved || offlineNow !== state.network.offline) loadNetListing();
 }
 
 function netCrumbs() {
@@ -2140,12 +2224,30 @@ async function loadNetListing() {
   if (!net.deviceId) {
     net.entries = [];
     net.error = "";
+    net.offline = false;
+    renderNetwork();
+    return;
+  }
+
+  // A device the peer list just told us is asleep does not need to be asked.
+  // Calling `peer_browse` anyway buys a connect timeout and then reports a
+  // failure as though something went wrong, when nothing did.
+  const peer = netSelectedPeer();
+  if (peer && !peer.online) {
+    net.loading = false;
+    net.entries = [];
+    net.error = "";
+    net.offline = true;
+    // Same rule as navigating: a tick you can no longer see is a download you
+    // did not mean to start -- and this one could not succeed anyway.
+    net.selected.clear();
     renderNetwork();
     return;
   }
 
   net.loading = true;
   net.error = "";
+  net.offline = false;
   renderNetwork();
 
   let data;
@@ -2234,8 +2336,17 @@ function renderNetwork() {
   if (!netUsableDevices().length) {
     host.innerHTML = netEmpty(
       "devices",
-      "No paired devices yet",
-      "Pair a computer on the Network page and whatever it shares will show up here."
+      "No connected devices yet",
+      "Connect to a computer on the Network page and whatever it shares will show up here."
+    );
+    return renderNetSelection();
+  }
+  if (net.offline) {
+    const peer = netSelectedPeer();
+    host.innerHTML = netEmpty(
+      "cloud_off",
+      (peer ? peer.name : "That device") + " is offline",
+      "Nothing was asked of it. What it shares appears here on its own, as soon as it is awake and running LAN Share."
     );
     return renderNetSelection();
   }

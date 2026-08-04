@@ -2920,9 +2920,12 @@ input[type="text"]:disabled {
 
 .device-list { display: flex; flex-direction: column; }
 
+/* Icon, body, actions. There was a fourth column holding an "Always accept"
+   switch, back when devices could push files at each other; nothing pushes any
+   more, so the control had no backend behind it and is gone. */
 .device-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   padding: 13px 16px;
@@ -3008,7 +3011,7 @@ input[type="text"]:disabled {
 }
 
 @media (max-width: 1080px) {
-  .device-row { grid-template-columns: auto minmax(0, 1fr) auto; row-gap: 10px; }
+  .device-row { grid-template-columns: auto minmax(0, 1fr); row-gap: 10px; }
   .device-actions { grid-column: 2 / -1; justify-content: flex-start; }
 }
 

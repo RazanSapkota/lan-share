@@ -11,9 +11,10 @@ Tauri v2, vanilla HTML/CSS/JS, **no bundler and no npm dependencies**.
 
 ## What it does
 
-- **Find other devices on the network automatically**, the way Bluetooth lists
-  nearby ones. Pair once per device; the list survives restarts.
-- **Browse what a paired device shares**, on a page of its own — thumbnails, a
+- **Find other devices on the network automatically**, and connect to them from
+  one list the way you would pick a Wi-Fi network — except you can be connected
+  to several at once. Connect once per device; the list survives restarts.
+- **Browse what a connected device shares**, on a page of its own — thumbnails, a
   full-size preview, video that seeks, and downloads either as separate files or
   as one `.zip`, your choice.
 - **One switch.** Starting the server is the whole decision: it shares your
@@ -37,17 +38,22 @@ Tauri v2, vanilla HTML/CSS/JS, **no bundler and no npm dependencies**.
 ### Device to device, in short
 
 Two computers running LAN Share on one network see each other within about five
-seconds. Click **Pair** on one; both then show the same six-digit code and you
+seconds. Click **Connect** on one; both then show the same six-digit code and you
 tap **Accept** on the other. Nothing to type — and the matching code is what
 stops a stranger on the same Wi-Fi from impersonating your laptop.
 
 After that each can browse the other's shares without a PIN, from the
-**Devices** page. **Network** does pairing and nothing else; **Shares** is what
-you hand out; **Devices** is what you can reach.
+**Devices** page. **Network** does connecting and disconnecting and nothing
+else; **Shares** is what you hand out; **Devices** is what you can reach.
+
+The three buttons map onto Wi-Fi's, because the states really are the same ones:
+**Connect** is the six-digit handshake, **Disconnect** stops traffic both ways
+but keeps the connection so reconnecting needs no code, and **Forget** throws it
+away so both sides start over. Underneath they are still pair, block and unpair.
 
 **Nothing pushes.** A device cannot send you a file, only offer one for you to
 come and take. That is a smaller protocol and a much smaller question — there is
-no prompt to accept, no folder to nominate in advance, and no way for a paired
+no prompt to accept, no folder to nominate in advance, and no way for a connected
 machine to put bytes on your disk while you are not looking.
 
 **Phones can't be peers** — there is no desktop binary for them. They keep the
@@ -273,7 +279,7 @@ its issuer.
 |---|---|
 | ![](docs/screenshots/desktop-shares.png) | ![](docs/screenshots/desktop-activity.png) |
 
-| Desktop — network | Pairing code |
+| Desktop — network | Connection code |
 |---|---|
 | ![](docs/screenshots/desktop-devices.png) | ![](docs/screenshots/pairing-code.png) |
 

@@ -289,7 +289,7 @@
              `net-*`; the label was what confused people, not the selectors. -->
         <section id="network-view" class="app-main hidden">
           <p class="hero-copy">
-            Folders the devices you have paired with are sharing. Browse them, preview what is
+            Folders the devices you are connected to are sharing. Browse them, preview what is
             inside, and pull down whatever you want — nothing is copied until you ask for it.
           </p>
 
@@ -297,7 +297,7 @@
             <article class="card net-card">
               <div class="shares-toolbar net-toolbar">
                 <select id="net-device" class="iface-select"
-                        data-tip="Which connected device to browse. Pair a new one on the Network page."></select>
+                        data-tip="Which connected device to browse. Connect to a new one on the Network page."></select>
                 <button id="net-up" class="ghost-button" type="button"
                         data-tip="Up one folder, and from the top back to that device's list of shares.">
                   <span class="material-symbols-outlined">arrow_back</span>
@@ -365,8 +365,9 @@
              `devices-view` — see the sidebar note. -->
         <section id="devices-view" class="app-main hidden">
           <p class="hero-copy">
-            Other computers running LAN Share on this network appear here. Pair once, and their
-            shared folders show up under Devices.
+            Every computer running LAN Share on this network appears here. Connect to as many as
+            you like — unlike Wi-Fi this is not one at a time — and what each one shares shows up
+            under Devices.
           </p>
 
           <div class="section-stack">
@@ -405,13 +406,17 @@
               </div>
             </div>
 
-            <!-- Nearby -->
+            <!-- One list, read like a Wi-Fi panel: what you are connected to at
+                 the top, then everything else on the network, then anything you
+                 have disconnected from. The one difference from Wi-Fi is that
+                 being connected to several at once is normal, so "Connected" is
+                 a state each row carries rather than a single highlighted entry. -->
             <article class="card">
               <div class="card-head device-card-head">
                 <span class="radar" id="radar" aria-hidden="true"
                       data-tip="Sweeping means this device is listening for others."></span>
-                <h3 data-tip="Other computers running LAN Share on this Wi-Fi. They appear within about five seconds of starting up.">Nearby devices</h3>
-                <span class="count-pill" id="nearby-count">0</span>
+                <h3 data-tip="Every device LAN Share can see on this network. Connect once — the six digits must match on both screens — and neither of you types a PIN again.">Devices on this network</h3>
+                <span class="count-pill" id="devices-count">0</span>
                 <span class="spacer"></span>
                 <button id="add-ip-btn" class="ghost-button" type="button"
                         data-tip="Type a device's address by hand, for networks that block the automatic discovery message.">
@@ -419,16 +424,7 @@
                   <span>Add by address</span>
                 </button>
               </div>
-              <div id="nearby-list" class="device-list" aria-live="polite" aria-relevant="additions"></div>
-            </article>
-
-            <!-- Paired -->
-            <article class="card">
-              <div class="card-head">
-                <h3 data-tip="Devices you have paired with. Neither of you types a PIN again — open the Devices page to browse what they offer, and they can browse yours.">Connected devices</h3>
-                <span class="count-pill" id="paired-count">0</span>
-              </div>
-              <div id="paired-list" class="device-list"></div>
+              <div id="devices-list" class="device-list" aria-live="polite" aria-relevant="additions"></div>
             </article>
           </div>
         </section>
@@ -617,7 +613,7 @@
                 </div>
 
                 <div class="card-head" style="border-top:1px solid var(--line); border-bottom:0; padding-left:0; padding-right:0">
-                  <h3 data-tip="Browsers currently signed in. Paired devices are not listed here — unpair those on the Network page.">Connected devices</h3>
+                  <h3 data-tip="Browsers currently signed in with the PIN. Devices you are connected to are not listed here — disconnect or forget those on the Network page.">Signed-in browsers</h3>
                   <button id="revoke-all-btn" class="ghost-button" type="button"
                           data-tip="Sign every browser out at once. They need the PIN again; the PIN itself does not change.">
                     <span class="material-symbols-outlined">logout</span>
@@ -788,9 +784,9 @@
          all the authority sits on the screen you walked over to. -->
     <div class="dialog-backdrop hidden" id="pair-out-backdrop">
       <div class="dialog-card pair-card" role="dialog" aria-modal="true" aria-labelledby="pair-out-title">
-        <h3 id="pair-out-title">Pairing with <span id="pair-out-name">device</span></h3>
+        <h3 id="pair-out-title">Connecting to <span id="pair-out-name">device</span></h3>
         <div class="pair-code-host">
-          <div class="pair-code" id="pair-out-code" role="status" aria-label="Pairing code"></div>
+          <div class="pair-code" id="pair-out-code" role="status" aria-label="Connection code"></div>
         </div>
         <div class="pair-compare">
           <span class="material-symbols-outlined">warning</span>
@@ -801,7 +797,7 @@
         <div class="pair-wait progress-track"><div class="progress-bar is-indeterminate"></div></div>
         <div class="dialog-actions">
           <button id="pair-out-cancel" class="ghost-button" type="button"
-                  data-tip="Call the pairing off. Nothing is remembered on either side.">Cancel</button>
+                  data-tip="Call it off. Nothing is remembered on either side.">Cancel</button>
         </div>
       </div>
     </div>
@@ -818,7 +814,7 @@
           </span>
         </div>
         <div class="pair-code-host">
-          <div class="pair-code" id="pair-in-code" role="status" aria-label="Pairing code"></div>
+          <div class="pair-code" id="pair-in-code" role="status" aria-label="Connection code"></div>
         </div>
         <div class="pair-compare">
           <span class="material-symbols-outlined">warning</span>
@@ -831,7 +827,7 @@
           <button id="pair-in-reject" class="ghost-button" type="button"
                   data-tip="Refuse. Nothing is stored and the other device is told plainly.">Reject</button>
           <button id="pair-in-accept" class="primary-button" type="button" disabled
-                  data-tip="Only if the digits match the other screen. From then on that device can send you files and browse your shares without the PIN.">Accept</button>
+                  data-tip="Only if the digits match the other screen. From then on each of you can browse what the other shares, without the PIN.">Accept</button>
         </div>
       </div>
     </div>
@@ -855,7 +851,7 @@
         <div class="dialog-actions">
           <button id="addip-cancel" class="ghost-button" type="button">Cancel</button>
           <button id="addip-ok" class="primary-button" type="button"
-                  data-tip="Contact that address now. If it answers, the device joins the Nearby list ready to pair.">Look for it</button>
+                  data-tip="Contact that address now. If it answers, the device joins the list ready to connect.">Look for it</button>
         </div>
       </div>
     </div>
