@@ -108,7 +108,6 @@ pub(crate) fn manifest_json(device_name: &str) -> String {
         "background_color": "#0b0b0d",
         "theme_color": "#0b0b0d",
         "icons": [
-            { "src": "/assets/icon.svg", "sizes": "any", "type": "image/svg+xml" },
             { "src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
             { "src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
         ]

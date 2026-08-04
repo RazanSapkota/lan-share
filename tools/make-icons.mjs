@@ -1,230 +1,232 @@
-// Generates every raster icon in src-tauri/icons/ from the mark defined below.
+// Generates every raster icon in src-tauri/icons/ from tools/icon-source.png.
 //
 //   node tools/make-icons.mjs
+//   node tools/make-icons.mjs --preview out.png
 //
 // Run by hand, never by the build. Nothing here is a dependency of anything --
 // only `zlib` from the Node standard library, which is what makes it possible
 // to keep the promise on the tin: no bundler, no npm packages, no toolchain.
-// The alternative was five binary files nobody could regenerate or explain.
 //
-// The mark is drawn procedurally rather than rasterized from the SVG, because
-// rasterizing SVG needs a renderer we deliberately do not have. Both are cut
-// from the same numbers -- see GEOM -- so the app icon and the inline SVGs in
-// ui/index.html and web/index.html stay the same shape.
+// This used to draw the mark procedurally, so that no binary nobody could
+// regenerate was ever committed. The artwork is now a raster the app did not
+// draw, so that promise is kept a different way: the source PNG lives in the
+// repo beside this file, and everything under src-tauri/icons/ is derived from
+// it by the code below. Delete the icons and one command puts them back.
+//
+// `zlib` still does the heavy lifting at both ends -- `inflateSync` to read the
+// source, `deflateSync` to write each output.
 
-import { deflateSync } from "node:zlib";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { deflateSync, inflateSync } from "node:zlib";
+import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src-tauri", "icons");
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OUT = join(HERE, "..", "src-tauri", "icons");
+const SOURCE = join(HERE, "icon-source.png");
 
 // ---------------------------------------------------------------------------
-// The mark
+// PNG decode
 // ---------------------------------------------------------------------------
-//
-// A folder in the lower-left, two quarter-arcs radiating from its top-right
-// corner: what you share, and who can reach it. Laid out on the same 24x24 grid
-// as every other icon in the UI, then scaled.
 
-const GEOM = {
-  // Folder body, and the tab that steps up on its left. The tab overlaps the
-  // body rather than sitting on top of it: two shapes that merely touch leave a
-  // seam wherever their corner radii differ.
-  folder: {
-    left: 1.9,
-    right: 14.2,
-    top: 9.4,
-    bottom: 20.6,
-    radius: 1.7,
-    tabTop: 6.4,
-    tabRight: 8.2,
-    tabRadius: 1.2,
-    // The tab's right edge leans outward as it descends, so it runs into the
-    // body instead of stopping dead.
-    tabSlant: 1.4,
-  },
-  // Radiating from the folder's TOP-RIGHT CORNER -- not its mid-height, which
-  // parks the first arc's cap against the folder's flank and welds the two
-  // shapes into one blob.
-  arcs: {
-    cx: 14.2,
-    cy: 9.4,
-    inner: 4.0,
-    outer: 7.0,
-    width: 2.3,
-    // Clear air punched through the folder around each arc. Without it the
-    // shapes merge at exactly the sizes where separation matters most.
-    gap: 0.85,
-  },
-  // The drawn shape spans roughly y 1.2..20.6 on the 24 grid, so it would sit
-  // high if the grid itself were centred. Nudge it, rather than rewriting every
-  // coordinate.
-  offset: { x: -0.1, y: 1.0 },
-};
-
-/// Arc thickness and the gap around it, for a given tile size.
+/// Decode a PNG into `{ width, height, rgba }`.
 ///
-/// Both grow at small sizes. Below about 32px the gap is a pixel or less, and
-/// a folder welded to its own signal is just a green blob.
-function strokeFor(size) {
-  if (size <= 20) return { width: 3.0, gap: 1.5 };
-  if (size <= 32) return { width: 2.7, gap: 1.2 };
-  return { width: GEOM.arcs.width, gap: GEOM.arcs.gap };
-}
+/// Deliberately narrow: 8-bit truecolour, with or without alpha, non-interlaced.
+/// That is what the source is, and widening this to palettes, 16-bit samples and
+/// Adam7 would be a few hundred lines serving a file that does not exist. It
+/// throws rather than guessing, so replacing the artwork with something exotic
+/// fails loudly here instead of producing quietly wrong icons.
+function decodePng(buf) {
+  const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (let i = 0; i < SIG.length; i++) {
+    if (buf[i] !== SIG[i]) throw new Error("not a PNG");
+  }
 
-// Emerald, top to bottom. Flat colour reads as a sticker at 256px; two stops is
-// enough depth without turning the glyph into a gradient exercise.
-//
-// The bottom stop is lifted from the emerald-600 it started at: with no tile
-// behind it the mark has to hold its own against a white taskbar as well as a
-// black one, and the darker green went muddy on light.
-const GLYPH_TOP = [0x34, 0xd3, 0x99];
-const GLYPH_BOTTOM = [0x0f, 0x9f, 0x76];
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  const idat = [];
 
-// ---------------------------------------------------------------------------
-// Coverage functions. Each returns 0..1 for a point in 24x24 space; the
-// renderer supersamples, so they only have to be right, not anti-aliased.
-// ---------------------------------------------------------------------------
+  // Walk the chunks. Everything that is not IHDR or IDAT is skipped -- the
+  // source carries a 29 KB private chunk from the tool that made it.
+  for (let at = 8; at + 8 <= buf.length; ) {
+    const length = buf.readUInt32BE(at);
+    const type = buf.toString("ascii", at + 4, at + 8);
+    const body = buf.subarray(at + 8, at + 8 + length);
 
-function insideRoundedRect(x, y, l, t, r, b, radius) {
-  if (x < l || x > r || y < t || y > b) return false;
-  const cx = Math.min(Math.max(x, l + radius), r - radius);
-  const cy = Math.min(Math.max(y, t + radius), b - radius);
-  const dx = x - cx;
-  const dy = y - cy;
-  return dx * dx + dy * dy <= radius * radius;
-}
+    if (type === "IHDR") {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      const depth = body[8];
+      const colour = body[9];
+      const interlace = body[12];
+      if (depth !== 8) throw new Error(`bit depth ${depth} unsupported, need 8`);
+      if (colour !== 2 && colour !== 6) {
+        throw new Error(`colour type ${colour} unsupported, need 2 (RGB) or 6 (RGBA)`);
+      }
+      if (interlace !== 0) throw new Error("interlaced PNG unsupported");
+      channels = colour === 6 ? 4 : 3;
+    } else if (type === "IDAT") {
+      idat.push(body);
+    } else if (type === "IEND") {
+      break;
+    }
 
-/// The tab: a rounded box on the left whose right edge leans outward, drawn
-/// down INTO the body so the union has no seam.
-function insideTab(x, y, f) {
-  const bottom = f.top + f.radius + 0.5; // safely inside the body
-  if (y < f.tabTop || y > bottom) return false;
-  if (x < f.left) return false;
-  // Only the top corners are rounded; the bottom is buried in the body.
-  if (y < f.tabTop + f.tabRadius) {
-    const cy = f.tabTop + f.tabRadius;
-    if (x < f.left + f.tabRadius) {
-      const dx = x - (f.left + f.tabRadius);
-      const dy = y - cy;
-      if (dx < 0 && dy < 0 && dx * dx + dy * dy > f.tabRadius * f.tabRadius) return false;
+    at += 12 + length; // length + type + body + crc
+  }
+  if (!width || !channels) throw new Error("no IHDR");
+
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const rgba = Buffer.alloc(width * height * 4);
+  // Reconstructed scanlines, kept because filters reference the row above.
+  const line = Buffer.alloc(stride);
+  const prev = Buffer.alloc(stride);
+
+  for (let y = 0, at = 0; y < height; y++) {
+    const filter = raw[at++];
+    raw.copy(line, 0, at, at + stride);
+    at += stride;
+
+    // The five filter types from the spec. `a` is the pixel to the left, `b`
+    // the one above, `c` above-left -- all zero off the edges.
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? line[i - channels] : 0;
+      const b = prev[i];
+      const c = i >= channels ? prev[i - channels] : 0;
+      let add = 0;
+      switch (filter) {
+        case 0: add = 0; break;
+        case 1: add = a; break;
+        case 2: add = b; break;
+        case 3: add = (a + b) >> 1; break;
+        case 4: {
+          const p = a + b - c;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - c);
+          add = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+          break;
+        }
+        default: throw new Error(`bad filter type ${filter} on row ${y}`);
+      }
+      line[i] = (line[i] + add) & 0xff;
+    }
+    line.copy(prev);
+
+    for (let x = 0; x < width; x++) {
+      const s = x * channels;
+      const d = (y * width + x) * 4;
+      rgba[d] = line[s];
+      rgba[d + 1] = line[s + 1];
+      rgba[d + 2] = line[s + 2];
+      rgba[d + 3] = channels === 4 ? line[s + 3] : 0xff;
     }
   }
-  const progress = (y - f.tabTop) / (bottom - f.tabTop);
-  return x <= f.tabRight + f.tabSlant * progress;
-}
 
-function folderCoverage(x, y) {
-  const f = GEOM.folder;
-  if (insideRoundedRect(x, y, f.left, f.top, f.right, f.bottom, f.radius)) return 1;
-  return insideTab(x, y, f) ? 1 : 0;
-}
-
-/// Distance from the centre line of a quarter-arc in the north-east quadrant of
-/// (cx, cy), measured with round caps. Returns Infinity nowhere -- the caps make
-/// it defined everywhere.
-function arcDistance(x, y, radius) {
-  const a = GEOM.arcs;
-  const dx = x - a.cx;
-  const dy = y - a.cy;
-  // Inside the sweep (due east round to due north): distance to the circle.
-  if (dx >= 0 && dy <= 0) return Math.abs(Math.hypot(dx, dy) - radius);
-  // Outside it: distance to the nearer end point, which is what gives the
-  // round cap.
-  return Math.min(
-    Math.hypot(x - (a.cx + radius), y - a.cy),
-    Math.hypot(x - a.cx, y - (a.cy - radius))
-  );
-}
-
-/// `simple` drops the outer arc. Two thin arcs turn to mush at 16px; one thick
-/// one still reads as a signal.
-function glyphCoverage(x, y, simple, stroke) {
-  const a = GEOM.arcs;
-  const radii = simple ? [a.inner] : [a.inner, a.outer];
-
-  for (const r of radii) {
-    if (arcDistance(x, y, r) <= stroke.width / 2) return 1;
-  }
-  if (!folderCoverage(x, y)) return 0;
-  // Punch the gap: folder, minus the halo around every arc.
-  for (const r of radii) {
-    if (arcDistance(x, y, r) <= stroke.width / 2 + stroke.gap) return 0;
-  }
-  return 1;
+  return { width, height, rgba };
 }
 
 // ---------------------------------------------------------------------------
-// Renderer
+// Crop + resample
 // ---------------------------------------------------------------------------
 
-// 8x8 coverage samples per pixel. These are a few hundred kilopixels in total,
-// so the cost is a second of wall clock, and the payoff is edges that survive
-// being scaled by the shell to whatever size it feels like.
-const SAMPLES = 8;
-
-/// Padding around the mark, as a fraction of the edge.
+/// Tightest box containing every pixel that is not fully transparent.
 ///
-/// Almost none. There is no tile to sit inside any more, so the drawing runs to
-/// the edges of the canvas the way every other taskbar icon does -- anything
-/// more and this one looks a size smaller than its neighbours, which is the
-/// entire complaint the tile caused. The sliver that remains is so the arcs'
-/// round caps are not clipped by the edge.
-function insetFor(_size) {
-  return 0.02;
+/// The artwork is a shape floating in a larger transparent canvas -- roughly a
+/// fifth of each axis is empty. Left in, every icon would render a size smaller
+/// than its neighbours in the taskbar, which is the whole reason the previous
+/// mark ran to the edges of its canvas.
+function alphaBounds({ width, height, rgba }) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (rgba[(y * width + x) * 4 + 3] !== 0) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) throw new Error("source is fully transparent");
+
+  // Square it off around the centre, so a source that is a pixel or two off
+  // square is not stretched into one.
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+  const edge = Math.max(w, h);
+  const cx = (minX + maxX + 1) / 2;
+  const cy = (minY + maxY + 1) / 2;
+  return {
+    x: Math.round(cx - edge / 2),
+    y: Math.round(cy - edge / 2),
+    edge,
+  };
 }
 
-function mix(a, b, t) {
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-  ];
-}
-
-/// Render the mark at `size`, returning RGBA bytes.
+/// Box-filter downscale of a square region into `size`.
 ///
-/// The mark alone, on transparency. There is no plate behind it: a tile inset
-/// from the canvas edges, with the glyph inset again inside that, is why this
-/// icon used to sit visibly smaller in the taskbar than everything beside it.
-function render(size, { simple = false } = {}) {
-  const px = Buffer.alloc(size * size * 4);
-  const pad = size * insetFor(size);
-  const scale = (size - pad * 2) / 24;
-  const stroke = strokeFor(size);
-  const total = SAMPLES * SAMPLES;
+/// Averaging every source pixel that lands under a destination pixel, rather
+/// than sampling one of them. At 32px each output pixel covers a ~25px box of
+/// the source, and picking one sample out of 625 is what makes a downscale
+/// look like it has been through a fax machine.
+///
+/// Alpha-weighted: colour is averaged in proportion to how opaque each
+/// contributing pixel is, so the transparent-but-dark pixels around the artwork
+/// cannot drag a dark fringe into its edges.
+function resample(src, box, size) {
+  const out = Buffer.alloc(size * size * 4);
+  const step = box.edge / size;
 
   for (let y = 0; y < size; y++) {
-    // One gradient stop per row: the ramp runs down the icon, so every pixel in
-    // a row is the same colour and only the coverage changes.
-    const glyph = mix(GLYPH_TOP, GLYPH_BOTTOM, size === 1 ? 0 : y / (size - 1));
-
+    const sy0 = box.y + y * step;
+    const sy1 = sy0 + step;
     for (let x = 0; x < size; x++) {
-      let hits = 0;
-      for (let sy = 0; sy < SAMPLES; sy++) {
-        for (let sx = 0; sx < SAMPLES; sx++) {
-          const gx = (x + (sx + 0.5) / SAMPLES - pad) / scale - GEOM.offset.x;
-          const gy = (y + (sy + 0.5) / SAMPLES - pad) / scale - GEOM.offset.y;
-          if (glyphCoverage(gx, gy, simple, stroke)) hits++;
+      const sx0 = box.x + x * step;
+      const sx1 = sx0 + step;
+
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      let n = 0;
+
+      for (let sy = Math.floor(sy0); sy < Math.ceil(sy1); sy++) {
+        if (sy < 0 || sy >= src.height) continue;
+        for (let sx = Math.floor(sx0); sx < Math.ceil(sx1); sx++) {
+          if (sx < 0 || sx >= src.width) continue;
+          const s = (sy * src.width + sx) * 4;
+          const alpha = src.rgba[s + 3] / 255;
+          r += src.rgba[s] * alpha;
+          g += src.rgba[s + 1] * alpha;
+          b += src.rgba[s + 2] * alpha;
+          a += src.rgba[s + 3];
+          n++;
         }
       }
 
-      const i = (y * size + x) * 4;
-      // Straight alpha with the colour carried through even at zero coverage:
-      // a transparent pixel that is black underneath fringes dark when the
-      // shell composites it against a light background.
-      px[i] = glyph[0];
-      px[i + 1] = glyph[1];
-      px[i + 2] = glyph[2];
-      px[i + 3] = Math.round((hits / total) * 255);
+      const d = (y * size + x) * 4;
+      if (!n) continue;
+      // Un-premultiply: the sum was weighted by alpha, so divide by the weight
+      // rather than the count, or every semi-transparent edge comes out dark.
+      const weight = a / 255;
+      if (weight > 0) {
+        out[d] = Math.min(255, Math.round(r / weight));
+        out[d + 1] = Math.min(255, Math.round(g / weight));
+        out[d + 2] = Math.min(255, Math.round(b / weight));
+      }
+      out[d + 3] = Math.round(a / n);
     }
   }
-  return px;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
-// PNG
+// PNG encode
 // ---------------------------------------------------------------------------
 
 const CRC_TABLE = (() => {
@@ -261,14 +263,59 @@ function png2(width, height, rgba) {
   ihdr[9] = 6; // truecolour + alpha
   // 10..12: deflate, adaptive filtering, no interlace -- all zero.
 
-  // Filter type 0 on every row. The shapes are flat colour, so deflate does the
-  // work and per-row filter heuristics would buy nothing.
+  // Adaptive filtering: try all five on each row and keep the one whose output
+  // has the smallest sum of absolute signed deviations. That is the heuristic
+  // the spec suggests and every real encoder uses; measured on this artwork it
+  // is worth about 11% over a fixed Sub filter. Not dramatic -- a photographic
+  // gradient is simply not what PNG is good at -- but the icons are embedded in
+  // the binary with include_bytes!, so it is binary size, not just disk.
   const stride = width * 4;
   const raw = Buffer.alloc((stride + 1) * height);
+  const candidate = Buffer.alloc(stride);
+  const best = Buffer.alloc(stride);
+
   for (let y = 0; y < height; y++) {
+    const row = y * stride;
+    const above = row - stride;
+    let bestScore = Infinity;
+    let bestType = 0;
+
+    for (let type = 0; type < 5; type++) {
+      let score = 0;
+      for (let i = 0; i < stride; i++) {
+        const a = i >= 4 ? rgba[row + i - 4] : 0;
+        const b = y > 0 ? rgba[above + i] : 0;
+        const c = y > 0 && i >= 4 ? rgba[above + i - 4] : 0;
+        let predict = 0;
+        switch (type) {
+          case 0: predict = 0; break;
+          case 1: predict = a; break;
+          case 2: predict = b; break;
+          case 3: predict = (a + b) >> 1; break;
+          default: {
+            const p = a + b - c;
+            const pa = Math.abs(p - a);
+            const pb = Math.abs(p - b);
+            const pc = Math.abs(p - c);
+            predict = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+          }
+        }
+        const v = (rgba[row + i] - predict) & 0xff;
+        candidate[i] = v;
+        // Signed magnitude: 200 is -56, and a byte close to zero either way is
+        // what deflate turns into nothing.
+        score += v < 128 ? v : 256 - v;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        bestType = type;
+        candidate.copy(best);
+      }
+    }
+
     const at = y * (stride + 1);
-    raw[at] = 0;
-    rgba.copy(raw, at + 1, y * stride, (y + 1) * stride);
+    raw[at] = bestType;
+    best.copy(raw, at + 1);
   }
 
   return Buffer.concat([
@@ -365,69 +412,25 @@ function icns(entries) {
 }
 
 // ---------------------------------------------------------------------------
-// Write everything
+// The source, cropped once and resampled on demand
 // ---------------------------------------------------------------------------
 
+const SRC = decodePng(readFileSync(SOURCE));
+const BOX = alphaBounds(SRC);
+
 const cache = new Map();
-function markAt(size, simple = false) {
-  const key = `${size}:${simple}`;
-  if (!cache.has(key)) cache.set(key, render(size, { simple }));
-  return cache.get(key);
+function markAt(size) {
+  if (!cache.has(size)) cache.set(size, resample(SRC, BOX, size));
+  return cache.get(size);
 }
 
 // ---------------------------------------------------------------------------
 // Preview: `node tools/make-icons.mjs --preview out.png`
 //
-// Writes a contact sheet of every size at 1:1 and again magnified, because the
-// only question that matters -- does this still read as a folder at 16px -- is
-// one you have to answer with your eyes.
+// A contact sheet of every size at 1:1 and again magnified, because the only
+// question that matters -- does this still read at 16px -- is one you have to
+// answer with your eyes.
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// `node tools/make-icons.mjs --svg`
-//
-// Prints the same mark as SVG paths, derived from GEOM, for the three places
-// that carry an inline copy: assets.rs ICON_SVG, ui/index.html (the header
-// mark) and web/index.html (the PIN screen). Change GEOM, run this, paste --
-// otherwise the drawing and the icons drift apart and only one of them is ever
-// noticed.
-// ---------------------------------------------------------------------------
-
-if (process.argv.includes("--svg")) {
-  const f = GEOM.folder;
-  const a = GEOM.arcs;
-  const o = GEOM.offset;
-  const n = (v) => Number(v.toFixed(1));
-  // Offset baked in, because the renderer applies it and the SVG has no
-  // equivalent step.
-  const L = n(f.left + o.x);
-  const R = n(f.right + o.x);
-  const T = n(f.top + o.y);
-  const B = n(f.bottom + o.y);
-  const r = f.radius;
-  const TT = n(f.tabTop + o.y);
-  const TR = n(f.tabRight + o.x);
-  const SL = n(f.tabRight + f.tabSlant + o.x);
-  const cx = n(a.cx + o.x);
-  const cy = n(a.cy + o.y);
-
-  const folder =
-    `M${n(L + r)} ${TT}H${TR}L${SL} ${T}H${n(R - r)}` +
-    `A${r} ${r} 0 0 1 ${R} ${n(T + r)}V${n(B - r)}` +
-    `A${r} ${r} 0 0 1 ${n(R - r)} ${B}H${n(L + r)}` +
-    `A${r} ${r} 0 0 1 ${L} ${n(B - r)}V${n(TT + r)}` +
-    `A${r} ${r} 0 0 1 ${n(L + r)} ${TT}Z`;
-  const arc = (radius) =>
-    `M${n(cx + radius)} ${cy}A${radius} ${radius} 0 0 0 ${cx} ${n(cy - radius)}`;
-
-  console.log(`<path d="${folder}" fill="currentColor"/>`);
-  for (const radius of [a.inner, a.outer]) {
-    console.log(
-      `<path d="${arc(radius)}" stroke="currentColor" stroke-width="${a.width}" stroke-linecap="round"/>`
-    );
-  }
-  process.exit(0);
-}
 
 const previewAt = process.argv.indexOf("--preview");
 if (previewAt !== -1) {
@@ -440,9 +443,9 @@ if (previewAt !== -1) {
   const sizes = [16, 24, 32, 48, 64, 128];
   const zoom = 6;
   const pad = 12;
-  // Three bands. With no tile behind it the mark has to carry itself on a dark
-  // taskbar, a light one, and the mid-tone of a photo wallpaper -- so all three
-  // are on screen at once rather than checked one at a time and forgotten.
+  // Three bands. The icon has to carry itself on a dark taskbar, a light one,
+  // and the mid-tone of a photo wallpaper -- so all three are on screen at once
+  // rather than checked one at a time and forgotten.
   const BANDS = [
     [0x18, 0x18, 0x1b],
     [0x80, 0x80, 0x86],
@@ -481,9 +484,9 @@ if (previewAt !== -1) {
 
     let x0 = pad;
     for (const size of sizes) {
-      const src = markAt(size, size <= 32);
+      const src = markAt(size);
       blit(src, size, x0, top + pad, zoom);
-      // The same mark at 1:1 underneath, which is the size it is actually seen
+      // The same icon at 1:1 underneath, which is the size it is actually seen
       // at -- the magnified one flatters everything.
       blit(src, size, x0, top + pad + size * zoom + 10, 1);
       x0 += size * zoom + pad;
@@ -495,10 +498,18 @@ if (previewAt !== -1) {
   process.exit(0);
 }
 
+// ---------------------------------------------------------------------------
+// Write everything
+// ---------------------------------------------------------------------------
+
 mkdirSync(OUT, { recursive: true });
 
+console.log(
+  `source ${SRC.width}x${SRC.height}, artwork ${BOX.edge}x${BOX.edge} at (${BOX.x},${BOX.y})`
+);
+
 // Tauri's five, straight from tauri.conf.json.
-writeFileSync(join(OUT, "32x32.png"), png(32, markAt(32, true)));
+writeFileSync(join(OUT, "32x32.png"), png(32, markAt(32)));
 writeFileSync(join(OUT, "128x128.png"), png(128, markAt(128)));
 writeFileSync(join(OUT, "128x128@2x.png"), png(256, markAt(256)));
 
@@ -513,10 +524,10 @@ writeFileSync(join(OUT, "128x128@2x.png"), png(256, markAt(256)));
 writeFileSync(
   join(OUT, "icon.ico"),
   ico([
-    { size: 16, data: dib(16, markAt(16, true)) },
-    { size: 20, data: dib(20, markAt(20, true)) },
-    { size: 24, data: dib(24, markAt(24, true)) },
-    { size: 32, data: dib(32, markAt(32, true)) },
+    { size: 16, data: dib(16, markAt(16)) },
+    { size: 20, data: dib(20, markAt(20)) },
+    { size: 24, data: dib(24, markAt(24)) },
+    { size: 32, data: dib(32, markAt(32)) },
     { size: 40, data: dib(40, markAt(40)) },
     { size: 48, data: dib(48, markAt(48)) },
     { size: 64, data: png(64, markAt(64)) },
@@ -531,15 +542,15 @@ writeFileSync(
 writeFileSync(
   join(OUT, "favicon.ico"),
   ico([
-    { size: 16, data: dib(16, markAt(16, true)) },
-    { size: 32, data: dib(32, markAt(32, true)) },
+    { size: 16, data: dib(16, markAt(16)) },
+    { size: 32, data: dib(32, markAt(32)) },
   ])
 );
 
 writeFileSync(
   join(OUT, "icon.icns"),
   icns([
-    { type: "ic11", data: png(32, markAt(32, true)) },
+    { type: "ic11", data: png(32, markAt(32)) },
     { type: "ic12", data: png(64, markAt(64)) },
     { type: "ic07", data: png(128, markAt(128)) },
     { type: "ic08", data: png(256, markAt(256)) },
@@ -547,8 +558,7 @@ writeFileSync(
   ])
 );
 
-// Manifest icons. Chrome on Android will not offer "Add to Home Screen" for an
-// SVG-only icon set, so these are what make the manifest more than decorative.
+// Manifest icons, and what the guest page uses as its favicon.
 writeFileSync(join(OUT, "icon-192.png"), png(192, markAt(192)));
 writeFileSync(join(OUT, "icon-512.png"), png(512, markAt(512)));
 
