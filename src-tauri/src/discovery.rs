@@ -311,7 +311,7 @@ pub(crate) enum BeaconAction {
     Nothing,
 }
 
-/// The visibility rule, pulled out of the loop so it can be tested without a
+/// The announce rule, pulled out of the loop so it can be tested without a
 /// socket. `announcing` is what the network currently believes.
 ///
 /// A goodbye is owed exactly once per visible period: repeating it every tick
@@ -343,11 +343,10 @@ async fn send_beacon(ctx: &ServerCtx, socket: &UdpSocket, port: u16, alive: bool
     }
 }
 
-/// Announce while visible; say goodbye the moment we stop being.
+/// Announce while the server runs; say goodbye on the way down.
 ///
-/// The visibility switch lives here rather than in the socket's lifetime: the
-/// socket stays bound either way, because being invisible has never meant
-/// being blind, and rebinding it would need a server restart.
+/// Running IS the consent to be seen -- there is no separate visibility switch,
+/// because sharing your folders and being findable are one decision.
 pub(crate) async fn announce_loop(
     ctx: ServerCtx,
     socket: Arc<UdpSocket>,
@@ -366,12 +365,12 @@ pub(crate) async fn announce_loop(
     let mut announcing = false;
 
     loop {
-        // Read live: renaming the device or flipping "visible" takes effect on
-        // the next tick, and at once when the toggle wakes us.
+        // Read live, so renaming the device takes effect on the next tick
+        // rather than needing a restart.
         let (visible, port) = ctx
             .settings
             .read()
-            .map(|s| (s.discoverable && s.peering_enabled, s.discovery_port))
+            .map(|s| (s.peering_enabled, s.discovery_port))
             .unwrap_or((false, 0));
 
         match beacon_action(visible, port, announcing) {
@@ -391,8 +390,6 @@ pub(crate) async fn announce_loop(
 
         tokio::select! {
             _ = tick.tick() => {}
-            // `set_discoverable` pokes this, so the switch acts now.
-            _ = ctx.discovery_wake.notified() => {}
             _ = shutdown.wait_for(|stop| *stop) => break,
         }
     }

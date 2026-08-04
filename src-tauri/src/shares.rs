@@ -323,19 +323,13 @@ pub(crate) fn display_path(path: &Path) -> String {
 // Share helpers
 // ---------------------------------------------------------------------------
 
-/// A share is servable only if it is enabled, its root still resolves, and --
-/// for a "Send to phone" handoff -- its window has not closed.
+/// A share is servable only if it is enabled and its root still resolves.
 pub(crate) fn is_servable(share: &ResolvedShare) -> bool {
-    share.cfg.enabled
-        && share.root_exists
-        && share
-            .expires_ms
-            .map(|at| at > crate::utils::now_ms())
-            .unwrap_or(true)
+    share.cfg.enabled && share.root_exists
 }
 
-/// Exact-name allowlist. Case-insensitive, because a link handed to a phone
-/// must not break on the casing the OS reports.
+/// Exact-name allowlist. Case-insensitive, because the casing the OS reports
+/// is not the casing a link was built from.
 fn passes_name_filter(share: &Share, name: &str) -> bool {
     share.include_names.is_empty()
         || share

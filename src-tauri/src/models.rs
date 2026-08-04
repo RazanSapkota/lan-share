@@ -73,12 +73,6 @@ pub(crate) const PAIR_TTL_MS: u64 = 120_000;
 pub(crate) const PAIR_MAX_ATTEMPTS: u32 = 5;
 pub(crate) const PAIR_LOCKOUT_SECONDS: u32 = 60;
 
-pub(crate) const OFFER_TTL_MS: u64 = 300_000;
-pub(crate) const TRANSFER_CAP: usize = 200;
-/// Suffix for a partially written inbound file. Renamed into place only on a
-/// byte-exact completion.
-pub(crate) const PART_SUFFIX: &str = ".lanshare-part";
-
 // ---------------------------------------------------------------------------
 // Task machinery -- copied wholesale from the reference app
 // ---------------------------------------------------------------------------
@@ -104,10 +98,20 @@ pub(crate) struct ProgressPayload {
     pub(crate) prewarm_result: Option<PrewarmResponse>,
     #[serde(default)]
     pub(crate) pair_result: Option<PairResult>,
-    /// Live row for a send/pull task, so the Transfers panel and the task
-    /// poller read the same numbers.
+    /// Where a peer download landed, so the page can offer to reveal it.
     #[serde(default)]
-    pub(crate) transfer: Option<Transfer>,
+    pub(crate) download_result: Option<DownloadResult>,
+}
+
+/// The finished shape of a peer download.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct DownloadResult {
+    /// Folder the files went into, or the archive itself when zipped.
+    pub(crate) path: String,
+    pub(crate) file_count: u64,
+    pub(crate) total_bytes: u64,
+    pub(crate) total_bytes_text: String,
+    pub(crate) zipped: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -163,10 +167,9 @@ pub(crate) struct Share {
     pub(crate) recursive: bool,
     /// Exact filenames to expose, case-insensitively. Empty = everything.
     ///
-    /// Used by "Send to phone", which roots an ephemeral share at the common
-    /// parent of the chosen files and then restricts it to exactly those --
-    /// so picking three photos out of a folder shares three photos, not the
-    /// folder.
+    /// What "Add files" uses: picking three photos out of a folder roots the
+    /// share at their parent and then restricts it to exactly those three,
+    /// rather than exposing the folder they happen to live in.
     #[serde(default)]
     pub(crate) include_names: Vec<String>,
     /// Lowercase, no dot. Empty = everything.
@@ -189,25 +192,16 @@ pub(crate) struct ResolvedShare {
     /// `std::fs::canonicalize` output -- verbatim `\\?\` form on Windows.
     pub(crate) root: PathBuf,
     pub(crate) root_exists: bool,
-    /// Set only on "Send to phone" handoffs. `is_servable` refuses the share
-    /// past this instant, so a link handed out once does not stay live.
-    pub(crate) expires_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ShareRegistry {
     pub(crate) shares: Vec<ResolvedShare>,
-    /// "Send to phone" handoffs. Deliberately NOT persisted and kept in their
-    /// own vec so `apply_config_to_state` can rebuild `shares` from the config
-    /// without destroying a link the user is mid-way through handing over.
-    pub(crate) ephemeral: Vec<ResolvedShare>,
 }
 
 impl ShareRegistry {
-    /// Every share, permanent and ephemeral. Ephemeral last, so a config share
-    /// always wins an id collision.
     pub(crate) fn all(&self) -> impl Iterator<Item = &ResolvedShare> {
-        self.shares.iter().chain(self.ephemeral.iter())
+        self.shares.iter()
     }
 
     pub(crate) fn by_id(&self, id: &str) -> Option<&ResolvedShare> {
@@ -222,12 +216,6 @@ impl ShareRegistry {
         }
         self.all()
             .find(|s| s.cfg.enabled && crate::auth::ct_eq_str(&s.cfg.token, token))
-    }
-
-    /// Drop handoffs whose window has closed.
-    pub(crate) fn sweep_ephemeral(&mut self, now_ms: u64) {
-        self.ephemeral
-            .retain(|s| s.expires_ms.map(|at| at > now_ms).unwrap_or(true));
     }
 }
 
@@ -266,13 +254,10 @@ pub(crate) struct Peer {
     pub(crate) added_ms: u64,
     #[serde(default)]
     pub(crate) last_seen_ms: u64,
-    /// Last address we successfully reached them on, so a send still works when
-    /// the beacon has not arrived yet after a restart.
+    /// Last address we successfully reached them on, so browsing still works
+    /// when the beacon has not arrived yet after a restart.
     #[serde(default)]
     pub(crate) last_address: Option<String>,
-    /// Skip the accept prompt for this device.
-    #[serde(default)]
-    pub(crate) auto_accept: bool,
     /// Refused everywhere, but kept in the list so the block is undoable.
     #[serde(default)]
     pub(crate) blocked: bool,
@@ -316,7 +301,6 @@ pub(crate) struct PeerView {
     pub(crate) address: Option<String>,
     pub(crate) last_seen_ms: u64,
     pub(crate) online: bool,
-    pub(crate) auto_accept: bool,
     pub(crate) blocked: bool,
     pub(crate) added_ms: u64,
     pub(crate) note: Option<String>,
@@ -407,89 +391,6 @@ pub(crate) struct PairResult {
 }
 
 // ---------------------------------------------------------------------------
-// Offers and transfers
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct OfferedFile {
-    pub(crate) name: String,
-    pub(crate) size: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OfferState {
-    Pending,
-    Accepted,
-    Declined,
-}
-
-/// An inbound batch a peer wants to send. Held until the user answers, so no
-/// bytes are ever written before consent.
-#[derive(Debug, Clone)]
-pub(crate) struct Offer {
-    pub(crate) offer_id: String,
-    pub(crate) peer_id: String,
-    pub(crate) peer_name: String,
-    pub(crate) files: Vec<OfferedFile>,
-    pub(crate) total_bytes: u64,
-    pub(crate) state: OfferState,
-    pub(crate) created_ms: u64,
-    /// Indices already written, so the same slot cannot be sent twice.
-    pub(crate) received: Vec<usize>,
-    /// The transfer row this offer feeds, so progress lands in one place.
-    pub(crate) transfer_id: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct OfferView {
-    pub(crate) offer_id: String,
-    pub(crate) peer_id: String,
-    pub(crate) peer_name: String,
-    pub(crate) file_count: usize,
-    pub(crate) total_bytes: u64,
-    pub(crate) total_bytes_text: String,
-    /// Capped for the UI -- a 500-file offer must not ship 500 rows.
-    pub(crate) files: Vec<OfferedFile>,
-    pub(crate) truncated: bool,
-}
-
-/// One in-flight or finished batch, either direction. Shown in the desktop
-/// Transfers panel.
-///
-/// `Deserialize` only because it rides on `ProgressPayload`, which derives it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Transfer {
-    pub(crate) id: u64,
-    /// "in" | "out"
-    pub(crate) direction: String,
-    pub(crate) peer_id: String,
-    pub(crate) peer_name: String,
-    pub(crate) file_name: String,
-    pub(crate) file_index: usize,
-    pub(crate) file_count: usize,
-    /// Bytes moved across the whole batch.
-    pub(crate) bytes: u64,
-    pub(crate) total_bytes: u64,
-    /// Bytes moved for the file named above.
-    pub(crate) file_bytes: u64,
-    pub(crate) file_total_bytes: u64,
-    /// active | stalled | done | failed | cancelled | declined
-    pub(crate) status: String,
-    pub(crate) started_at_ms: u64,
-    pub(crate) updated_at_ms: u64,
-    pub(crate) error: Option<String>,
-}
-
-impl Transfer {
-    pub(crate) fn is_terminal(&self) -> bool {
-        matches!(
-            self.status.as_str(),
-            "done" | "failed" | "cancelled" | "declined"
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Device identity and discovery status
 // ---------------------------------------------------------------------------
 
@@ -499,17 +400,15 @@ pub(crate) struct DeviceIdentity {
     pub(crate) name: String,
     pub(crate) platform: String,
     pub(crate) addresses: Vec<String>,
-    pub(crate) discoverable: bool,
-    pub(crate) receive_dir: String,
     pub(crate) peering_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct DiscoveryStatus {
-    /// We are ANNOUNCING: other devices can see this one.
+    /// We are announcing, so other devices can see this one. Running the server
+    /// is the whole of the decision: there is no second switch.
     pub(crate) running: bool,
-    /// The UDP socket is bound, so we can HEAR other devices. True even while
-    /// hidden -- going invisible stops the beacon, not the ear.
+    /// The UDP socket is bound, so we can hear other devices.
     pub(crate) listening: bool,
     pub(crate) port: u16,
     /// ok | inbound_likely_blocked | nothing_heard | error
@@ -704,12 +603,9 @@ pub(crate) struct ServerSettings {
     pub(crate) default_view_mode: String,
     // --- peers ---
     pub(crate) device_name: String,
-    pub(crate) discoverable: bool,
     pub(crate) peering_enabled: bool,
     pub(crate) peer_browse_enabled: bool,
     pub(crate) discovery_port: u16,
-    pub(crate) max_offer_files: usize,
-    pub(crate) max_offer_bytes: u64,
 }
 
 impl ServerSettings {
@@ -723,8 +619,6 @@ impl ServerSettings {
             // changing its port needs the same teardown.
             || self.discovery_port != other.discovery_port
             // Peering is what decides whether that socket exists at all.
-            // `discoverable` deliberately does NOT appear here: it only starts
-            // and stops the beacon, which the announce loop reads live.
             || self.peering_enabled != other.peering_enabled
     }
 
@@ -755,12 +649,9 @@ impl ServerSettings {
             default_sort_asc: config.default_sort_asc,
             default_view_mode: config.default_view_mode.clone(),
             device_name: config.device_name.clone(),
-            discoverable: config.discoverable,
             peering_enabled: config.peering_enabled,
             peer_browse_enabled: config.peer_browse_enabled,
             discovery_port: config.discovery_port,
-            max_offer_files: config.max_offer_files,
-            max_offer_bytes: config.max_offer_bytes,
         }
     }
 }
@@ -789,26 +680,13 @@ pub(crate) struct ServerCtx {
     pub(crate) discovered: Arc<Mutex<HashMap<String, DiscoveredPeer>>>,
     pub(crate) pending_pairs: Arc<Mutex<HashMap<String, PendingPair>>>,
     pub(crate) pair_attempts: Arc<Mutex<HashMap<IpAddr, AttemptState>>>,
-    pub(crate) offers: Arc<Mutex<HashMap<String, Offer>>>,
-    pub(crate) transfers: Arc<Mutex<VecDeque<Transfer>>>,
-    pub(crate) next_transfer_id: Arc<AtomicU64>,
-    /// Flipped by `cancel_transfer`; polled by both the send loop and the
-    /// receive body reader at safe points.
-    pub(crate) transfer_cancels: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     /// Our own identity, so handlers can answer `/api/peer/hello` and the
     /// beacon loop can announce without touching the config file.
     pub(crate) device_id: Arc<String>,
-    pub(crate) receive_dir: PathBuf,
     /// Epoch-ms we last saw our OWN looped beacon. The inbound-path health
     /// check reads this; see `discovery::health`.
     pub(crate) discovery_self_seen_ms: Arc<AtomicU64>,
     pub(crate) discovery_started_ms: Arc<AtomicU64>,
-    /// Poked when "visible" is toggled, so the announce loop acts NOW instead
-    /// of on its next five-second tick. Without it, switching yourself off
-    /// leaves you on every other device's screen for up to a tick plus the
-    /// twenty-second offline threshold -- long enough to read as "the button
-    /// did nothing".
-    pub(crate) discovery_wake: Arc<tokio::sync::Notify>,
 }
 
 // ---------------------------------------------------------------------------
@@ -833,17 +711,6 @@ pub(crate) struct LanUrl {
     pub(crate) url: String,
     pub(crate) is_primary: bool,
     pub(crate) is_virtual: bool,
-}
-
-/// A live "Send to phone" link.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct HandoffView {
-    pub(crate) id: String,
-    pub(crate) url: String,
-    pub(crate) svg: String,
-    pub(crate) label: String,
-    pub(crate) file_count: usize,
-    pub(crate) expires_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1025,9 +892,6 @@ pub(crate) struct AppConfig {
     pub(crate) device_id: String,
     #[serde(default = "default_server_name")]
     pub(crate) device_name: String,
-    /// Announce ourselves on the LAN while the server runs.
-    #[serde(default = "default_true")]
-    pub(crate) discoverable: bool,
     #[serde(default = "default_true")]
     pub(crate) peering_enabled: bool,
     /// Whether a paired device may also browse and pull our shares.
@@ -1039,14 +903,6 @@ pub(crate) struct AppConfig {
     // --- paired devices (the friends list) ---
     #[serde(default)]
     pub(crate) peers: Vec<Peer>,
-    /// Where files sent by a peer land. Empty = resolved to the OS Downloads
-    /// folder at startup.
-    #[serde(default)]
-    pub(crate) receive_dir: Option<String>,
-    #[serde(default = "default_max_offer_files")]
-    pub(crate) max_offer_files: usize,
-    #[serde(default = "default_max_offer_bytes")]
-    pub(crate) max_offer_bytes: u64,
 
     // --- discovery ---
     #[serde(default)]
@@ -1104,14 +960,6 @@ fn default_view_mode() -> String {
 fn default_discovery_port() -> u16 {
     DEFAULT_DISCOVERY_PORT
 }
-fn default_max_offer_files() -> usize {
-    500
-}
-fn default_max_offer_bytes() -> u64 {
-    // 512 GB. Not a security control -- it is a sanity bound so a malformed or
-    // hostile offer cannot render a prompt claiming an absurd size.
-    512 * 1024 * 1024 * 1024
-}
 fn default_hidden_names() -> Vec<String> {
     [
         "desktop.ini",
@@ -1164,14 +1012,10 @@ impl Default for AppConfig {
             // path and there is no way to mint two ids for one install.
             device_id: String::new(),
             device_name: default_server_name(),
-            discoverable: true,
             peering_enabled: true,
             peer_browse_enabled: true,
             discovery_port: DEFAULT_DISCOVERY_PORT,
             peers: Vec::new(),
-            receive_dir: None,
-            max_offer_files: default_max_offer_files(),
-            max_offer_bytes: default_max_offer_bytes(),
             mdns_enabled: false,
             preferred_interface: None,
             last_picked_dir: None,
@@ -1241,26 +1085,14 @@ pub(crate) struct AppState {
     pub(crate) discovered: Arc<Mutex<HashMap<String, DiscoveredPeer>>>,
     pub(crate) pending_pairs: Arc<Mutex<HashMap<String, PendingPair>>>,
     pub(crate) pair_attempts: Arc<Mutex<HashMap<IpAddr, AttemptState>>>,
-    pub(crate) offers: Arc<Mutex<HashMap<String, Offer>>>,
-    pub(crate) transfers: Arc<Mutex<VecDeque<Transfer>>>,
-    pub(crate) next_transfer_id: Arc<AtomicU64>,
-    pub(crate) transfer_cancels: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
-    /// Resolved once in `setup()` from config or the OS Downloads folder.
-    pub(crate) receive_dir: Arc<Mutex<Option<PathBuf>>>,
     pub(crate) discovery_self_seen_ms: Arc<AtomicU64>,
     pub(crate) discovery_started_ms: Arc<AtomicU64>,
     pub(crate) discovery_error: Arc<Mutex<Option<String>>>,
     /// Whether the discovery socket is actually bound right now.
     ///
-    /// NOT the same as the `discoverable` config flag: the socket outlives a
-    /// flip to invisible, and it is absent when the bind failed even though the
-    /// flag says yes. `set_discoverable` reads this to decide whether making
-    /// the device visible needs a server restart -- inferring it from the flag
-    /// restarted the server, dropping every in-flight download, every time
-    /// someone switched visibility back on.
+    /// False when the bind failed -- discovery is a convenience and a blocked
+    /// UDP port does not stop the server, so the two can disagree.
     pub(crate) discovery_bound: Arc<AtomicBool>,
-    /// Sender half of `ServerCtx::discovery_wake`.
-    pub(crate) discovery_wake: Arc<tokio::sync::Notify>,
 }
 
 impl AppState {
@@ -1290,16 +1122,10 @@ impl AppState {
             discovered: Arc::new(Mutex::new(HashMap::new())),
             pending_pairs: Arc::new(Mutex::new(HashMap::new())),
             pair_attempts: Arc::new(Mutex::new(HashMap::new())),
-            offers: Arc::new(Mutex::new(HashMap::new())),
-            transfers: Arc::new(Mutex::new(VecDeque::with_capacity(32))),
-            next_transfer_id: Arc::new(AtomicU64::new(0)),
-            transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
-            receive_dir: Arc::new(Mutex::new(None)),
             discovery_self_seen_ms: Arc::new(AtomicU64::new(0)),
             discovery_started_ms: Arc::new(AtomicU64::new(0)),
             discovery_error: Arc::new(Mutex::new(None)),
             discovery_bound: Arc::new(AtomicBool::new(false)),
-            discovery_wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }

@@ -14,7 +14,6 @@ mod routes;
 mod server;
 mod shares;
 mod tasks;
-mod transfer;
 #[cfg(test)]
 mod tests;
 mod utils;
@@ -24,13 +23,16 @@ use tauri::Manager;
 
 use crate::{
     models::AppState,
+    // Devices: pairing and the friends list. Nothing pushes files any more --
+    // everything moves because the other side asked for it.
     tasks::{
-        accept_offer, accept_pair_request, add_peer_by_address, cancel_transfer, decline_offer,
-        decline_pair_request, get_device_identity, list_discovered, list_incoming_offers,
-        list_incoming_pair_requests, list_peers, list_transfers, peer_browse, pick_receive_folder,
-        rename_peer, set_device_name, set_discoverable, set_peer_auto_accept, set_peer_blocked,
-        start_pair_task, start_send_files_task, unpair_peer,
-        create_handoff, revoke_handoff, list_handoffs,
+        accept_pair_request, add_peer_by_address, decline_pair_request, get_device_identity,
+        list_discovered, list_incoming_pair_requests, list_peers, rename_peer, set_device_name,
+        set_peer_blocked, start_pair_task, unpair_peer,
+    },
+    // Network: reading another device's shares.
+    tasks::{
+        peer_browse, peer_media_url, peer_thumb, start_peer_download_task,
         detect_player, open_in_player, play_peer_file,
     },
     tasks::{
@@ -38,7 +40,7 @@ use crate::{
         format_bytes_command, generate_pin, get_activity_log, get_firewall_hint, get_lan_urls,
         get_pin, get_qr_for_url, get_server_status, get_share_qr, get_task_progress,
         get_thumb_cache_stats, list_sessions, list_shares, load_config, open_url, path_exists,
-        pick_files, pick_folder, preview_share, regenerate_share_token, remove_share,
+        pick_files, pick_folder, regenerate_share_token, remove_share,
         restart_server, revoke_all_sessions, revoke_session, save_config, set_inbox_share,
         set_pin, set_pin_enabled, set_share_enabled, show_in_explorer, start_index_share_task,
         start_prewarm_thumbs_task, start_server, stop_server, update_share,
@@ -57,14 +59,6 @@ fn main() {
                 if let Ok(mut slot) = state.thumb_dir.lock() {
                     *slot = Some(dir);
                 }
-            }
-
-            // Resolve the receive folder up front so the Devices page can show
-            // it before the server has ever run, and clear any `.part` files a
-            // crash mid-transfer left behind -- the one case nothing else
-            // cleans up, since the normal paths delete on every failure.
-            if let Ok(dir) = peers::resolve_receive_dir(&app.handle(), &state) {
-                transfer::sweep_parts(&dir, 0);
             }
 
             // Autostart is off by default -- the first bind to 0.0.0.0 raises
@@ -95,7 +89,6 @@ fn main() {
             set_share_enabled,
             regenerate_share_token,
             set_inbox_share,
-            preview_share,
             // pin
             get_pin,
             set_pin,
@@ -122,41 +115,31 @@ fn main() {
             get_task_progress,
             clear_task,
             cancel_task,
-            // peers: this device
+            // devices: this one
             get_device_identity,
             set_device_name,
-            set_discoverable,
-            pick_receive_folder,
-            // peers: discovery
+            // devices: discovery
             list_discovered,
             add_peer_by_address,
-            // peers: pairing
+            // devices: pairing
             start_pair_task,
             list_incoming_pair_requests,
             accept_pair_request,
             decline_pair_request,
-            // peers: the friends list
+            // devices: the friends list
             list_peers,
             unpair_peer,
             rename_peer,
             set_peer_blocked,
-            set_peer_auto_accept,
-            // peers: transfers
-            start_send_files_task,
-            list_transfers,
-            cancel_transfer,
-            list_incoming_offers,
-            accept_offer,
-            decline_offer,
+            // network: reading another device's shares
             peer_browse,
+            peer_thumb,
+            peer_media_url,
+            start_peer_download_task,
             // external players
             open_in_player,
             detect_player,
             play_peer_file,
-            // send to phone
-            create_handoff,
-            revoke_handoff,
-            list_handoffs,
             // os
             pick_folder,
             pick_files,

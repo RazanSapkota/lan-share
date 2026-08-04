@@ -84,9 +84,6 @@ pub(crate) fn normalize(config: &mut AppConfig) {
     if config.discovery_port < 1024 || config.discovery_port == config.port {
         config.discovery_port = crate::models::DEFAULT_DISCOVERY_PORT;
     }
-    config.max_offer_files = config.max_offer_files.clamp(1, 10_000);
-    config.max_offer_bytes = config.max_offer_bytes.max(1);
-
     // A player that has been uninstalled or moved would otherwise fail on every
     // Play with an error from the shell rather than falling back to the OS
     // default, which is what an empty setting means.
@@ -210,13 +207,7 @@ pub(crate) fn apply_config_to_state(state: &AppState, config: &AppConfig) -> Res
             .shares
             .write()
             .map_err(|_| anyhow::anyhow!("share state poisoned"))?;
-        // Carry the handoffs across. They are not in the config, so a blind
-        // overwrite would silently kill a "Send to phone" link the moment any
-        // unrelated setting changed.
-        let ephemeral = std::mem::take(&mut guard.ephemeral);
         *guard = registry;
-        guard.ephemeral = ephemeral;
-        guard.sweep_ephemeral(crate::utils::now_ms());
     }
     {
         // Same live-state property the PIN has: unpairing or blocking a device
@@ -244,7 +235,6 @@ pub(crate) fn build_registry(shares: &[Share]) -> ShareRegistry {
                 cfg: cfg.clone(),
                 root,
                 root_exists: true,
-                expires_ms: None,
             },
             // A disconnected drive or deleted folder must not drop the share
             // from the config -- the user would lose the name, token and
@@ -253,14 +243,10 @@ pub(crate) fn build_registry(shares: &[Share]) -> ShareRegistry {
                 cfg: cfg.clone(),
                 root: PathBuf::from(&cfg.path),
                 root_exists: false,
-                expires_ms: None,
             },
         })
         .collect();
-    ShareRegistry {
-        shares: resolved,
-        ephemeral: Vec::new(),
-    }
+    ShareRegistry { shares: resolved }
 }
 
 fn prune_stale_sessions(state: &AppState, config: &AppConfig) {

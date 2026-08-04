@@ -64,7 +64,6 @@ fn share_at(root: &std::path::Path, name: &str) -> ResolvedShare {
         },
         root: canonical,
         root_exists: true,
-        expires_ms: None,
     }
 }
 
@@ -839,7 +838,6 @@ fn share_registry_looks_up_by_id_and_token() {
     let share = share_at(&root, "Test");
     let registry = ShareRegistry {
         shares: vec![share.clone()],
-        ephemeral: Vec::new(),
     };
 
     assert!(registry.by_id("test").is_some());
@@ -855,7 +853,6 @@ fn share_registry_looks_up_by_id_and_token() {
     disabled.cfg.enabled = false;
     let registry = ShareRegistry {
         shares: vec![disabled],
-        ephemeral: Vec::new(),
     };
     assert!(registry.by_token("TESTTOKEN").is_none());
 
@@ -1393,7 +1390,6 @@ struct HttpFixture {
     /// transfers) the way the desktop commands do.
     ctx: crate::models::ServerCtx,
     base: PathBuf,
-    receive_dir: PathBuf,
     share_id: String,
     share_token: String,
     runtime: tokio::runtime::Runtime,
@@ -1419,14 +1415,6 @@ impl Default for FixtureOpts {
     }
 }
 
-/// Build a router over a temp share. `pin` empty disables the PIN gate.
-fn http_fixture(pin: &str) -> HttpFixture {
-    fixture_with(FixtureOpts {
-        pin: pin.to_string(),
-        ..Default::default()
-    })
-}
-
 /// The single `ServerCtx` construction site. Extracted from `http_fixture` so
 /// that adding a field to `ServerCtx` is one edit here rather than one per
 /// test module.
@@ -1437,10 +1425,6 @@ fn fixture_with(opts: FixtureOpts) -> HttpFixture {
     write_file(&root.join("sub").join("clip.txt"), "nested");
     // A sibling the share must never be able to reach.
     write_file(&base.join("secret.txt"), "TOP SECRET");
-
-    let receive_dir = base.join("received");
-    fs::create_dir_all(&receive_dir).unwrap();
-    let receive_dir = shares::canonical_root(&receive_dir.to_string_lossy()).unwrap();
 
     let mut share = share_at(&root, "Photos");
     share.cfg.id = "shr1".to_string();
@@ -1458,7 +1442,6 @@ fn fixture_with(opts: FixtureOpts) -> HttpFixture {
         settings: Arc::new(RwLock::new(settings)),
         shares: Arc::new(RwLock::new(ShareRegistry {
             shares: vec![share.clone()],
-            ephemeral: Vec::new(),
         })),
         sessions: Arc::new(Mutex::new(HashMap::new())),
         play_tokens: Arc::new(Mutex::new(HashMap::new())),
@@ -1473,22 +1456,15 @@ fn fixture_with(opts: FixtureOpts) -> HttpFixture {
         discovered: Arc::new(Mutex::new(HashMap::new())),
         pending_pairs: Arc::new(Mutex::new(HashMap::new())),
         pair_attempts: Arc::new(Mutex::new(HashMap::new())),
-        offers: Arc::new(Mutex::new(HashMap::new())),
-        transfers: Arc::new(Mutex::new(VecDeque::new())),
-        next_transfer_id: Arc::new(AtomicU64::new(0)),
-        transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
         device_id: Arc::new("hostdevice1".to_string()),
-        receive_dir: receive_dir.clone(),
         discovery_self_seen_ms: Arc::new(AtomicU64::new(0)),
         discovery_started_ms: Arc::new(AtomicU64::new(0)),
-        discovery_wake: Arc::new(tokio::sync::Notify::new()),
     };
 
     HttpFixture {
         router: crate::server::build_router(ctx.clone()),
         ctx,
         base,
-        receive_dir,
         share_id: share.cfg.id,
         share_token: share.cfg.token,
         // A current-thread runtime built locally, so tokio's `macros` feature
@@ -1498,6 +1474,14 @@ fn fixture_with(opts: FixtureOpts) -> HttpFixture {
             .build()
             .unwrap(),
     }
+}
+
+/// Build a router over a temp share. `pin` empty disables the PIN gate.
+fn http_fixture(pin: &str) -> HttpFixture {
+    fixture_with(FixtureOpts {
+        pin: pin.to_string(),
+        ..Default::default()
+    })
 }
 
 /// A paired device, from the receiving side's point of view.
@@ -1511,7 +1495,6 @@ fn test_peer(id: &str, in_token: &str) -> Peer {
         added_ms: 1,
         last_seen_ms: 1,
         last_address: None,
-        auto_accept: false,
         blocked: false,
         note: None,
     }
@@ -3000,14 +2983,42 @@ fn peer_browse_respects_its_own_switch() {
     });
     let token = "INTOKENINTOKENINTOKENINT01";
 
-    let (status, _, _) = fx.get_as_peer("/api/list?share=shr1&path=", token);
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // Sending still works -- browse and receive are separate permissions.
+    for uri in [
+        "/api/list?share=shr1&path=",
+        "/api/shares",
+        "/files/shr1/photo.jpg",
+        "/download/shr1/photo.jpg",
+    ] {
+        let (status, _, _) = fx.get_as_peer(uri, token);
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} was readable");
+    }
+}
+
+/// Devices pull; nothing pushes. The offer protocol is gone, and the point of
+/// this test is that it cannot come back by accident -- a route re-registered
+/// without the UI to drive it would be a live way onto someone's disk.
+#[test]
+fn no_route_accepts_a_pushed_file() {
+    let fx = fixture_with(FixtureOpts {
+        peers: vec![test_peer("dev1", "INTOKENINTOKENINTOKENINT01")],
+        ..Default::default()
+    });
+    let token = "INTOKENINTOKENINTOKENINT01";
+
     let (status, _, _) = fx.post_as_peer(
         "/api/peer/offer",
         token,
         r#"{"files":[{"name":"a.txt","size":1}]}"#,
     );
+    assert_eq!(status, StatusCode::NOT_FOUND, "the offer route still answers");
+
+    for uri in ["/api/peer/offer/anything", "/api/peer/file/anything/0"] {
+        let (status, _, _) = fx.get_as_peer(uri, token);
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} still answers");
+    }
+
+    // Pairing, though, is exactly as it was.
+    let (status, _, _) = fx.get("/api/peer/hello", None);
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -3073,262 +3084,6 @@ fn peer_fixture() -> (HttpFixture, &'static str) {
         ..Default::default()
     });
     (fx, token)
-}
-
-/// A rejected filename must fail the WHOLE offer with nothing recorded, so the
-/// human is never shown a prompt whose contents differ from what would land.
-#[test]
-fn an_offer_with_a_bad_filename_is_refused_entirely() {
-    let (fx, token) = peer_fixture();
-    for name in [
-        "../../evil.exe",
-        "..\\evil.exe",
-        "/etc/passwd",
-        "C:\\x.txt",
-        "a/b.txt",
-        "con.txt",
-        "trailing.",
-        "nul",
-        "x:y",
-        "..",
-    ] {
-        let body = format!(
-            r#"{{"files":[{{"name":"ok.txt","size":1}},{{"name":"{}","size":1}}]}}"#,
-            name.replace('\\', "\\\\")
-        );
-        let (status, _, out) = fx.post_as_peer("/api/peer/offer", token, &body);
-        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted {name:?}");
-        assert_eq!(fx.json(&out)["error"], "bad_filename");
-        assert!(
-            fx.ctx.offers.lock().unwrap().is_empty(),
-            "a partial offer was recorded for {name:?}"
-        );
-    }
-}
-
-#[test]
-fn an_empty_or_oversized_offer_is_refused() {
-    let (fx, token) = peer_fixture();
-    assert_eq!(
-        fx.post_as_peer("/api/peer/offer", token, r#"{"files":[]}"#).0,
-        StatusCode::BAD_REQUEST
-    );
-
-    fx.ctx.settings.write().unwrap().max_offer_bytes = 10;
-    let (status, _, out) = fx.post_as_peer(
-        "/api/peer/offer",
-        token,
-        r#"{"files":[{"name":"big.bin","size":1000}]}"#,
-    );
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(fx.json(&out)["error"], "too_large");
-}
-
-#[test]
-fn a_second_offer_from_the_same_peer_is_refused() {
-    let (fx, token) = peer_fixture();
-    let body = r#"{"files":[{"name":"a.txt","size":1}]}"#;
-    assert_eq!(fx.post_as_peer("/api/peer/offer", token, body).0, StatusCode::OK);
-    let (status, _, out) = fx.post_as_peer("/api/peer/offer", token, body);
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(fx.json(&out)["error"], "offer_in_progress");
-}
-
-#[test]
-fn an_auto_accept_peer_skips_the_prompt() {
-    let mut peer = test_peer("dev1", "INTOKENINTOKENINTOKENINT01");
-    peer.auto_accept = true;
-    let fx = fixture_with(FixtureOpts {
-        peers: vec![peer],
-        ..Default::default()
-    });
-
-    let (status, _, body) = fx.post_as_peer(
-        "/api/peer/offer",
-        "INTOKENINTOKENINTOKENINT01",
-        r#"{"files":[{"name":"a.txt","size":1}]}"#,
-    );
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(fx.json(&body)["state"], "accepted");
-    // Nothing to ask the user about.
-    assert!(crate::peers::list_offers_ctx(&fx.ctx).is_empty());
-}
-
-fn make_offer(fx: &HttpFixture, token: &str, name: &str, size: usize) -> String {
-    let body = format!(r#"{{"files":[{{"name":"{name}","size":{size}}}]}}"#);
-    let (status, _, out) = fx.post_as_peer("/api/peer/offer", token, &body);
-    assert_eq!(status, StatusCode::OK);
-    fx.json(&out)["offerId"].as_str().unwrap().to_string()
-}
-
-fn put_file(
-    fx: &HttpFixture,
-    token: &str,
-    offer_id: &str,
-    index: usize,
-    body: &[u8],
-    declared: Option<usize>,
-) -> (StatusCode, Vec<u8>) {
-    let mut builder = fx
-        .build(&format!("/api/peer/file/{offer_id}/{index}"), None, None)
-        .method("PUT")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"));
-    if let Some(len) = declared {
-        builder = builder.header(header::CONTENT_LENGTH, len.to_string());
-    }
-    let (status, _, out) = fx.send(builder.body(Body::from(body.to_vec())).unwrap());
-    (status, out)
-}
-
-#[test]
-fn a_file_cannot_be_pushed_before_acceptance() {
-    let (fx, token) = peer_fixture();
-    let offer_id = make_offer(&fx, token, "photo.jpg", 5);
-    let (status, out) = put_file(&fx, token, &offer_id, 0, b"hello", Some(5));
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(fx.json(&out)["error"], "not_accepted");
-    assert!(!fx.receive_dir.join("photo.jpg").exists());
-}
-
-#[test]
-fn a_file_cannot_be_pushed_after_a_decline() {
-    let (fx, token) = peer_fixture();
-    let offer_id = make_offer(&fx, token, "photo.jpg", 5);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, false).unwrap();
-    let (status, _) = put_file(&fx, token, &offer_id, 0, b"hello", Some(5));
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(!fx.receive_dir.join("photo.jpg").exists());
-}
-
-#[test]
-fn an_accepted_file_lands_in_the_receive_folder() {
-    let (fx, token) = peer_fixture();
-    let offer_id = make_offer(&fx, token, "photo.jpg", 5);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-
-    let (status, out) = put_file(&fx, token, &offer_id, 0, b"hello", Some(5));
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(fx.json(&out)["savedAs"], "photo.jpg");
-    assert_eq!(fs::read_to_string(fx.receive_dir.join("photo.jpg")).unwrap(), "hello");
-}
-
-#[test]
-fn content_length_is_required_and_must_match() {
-    let (fx, token) = peer_fixture();
-    let offer_id = make_offer(&fx, token, "photo.jpg", 5);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-
-    let (status, _) = put_file(&fx, token, &offer_id, 0, b"hello", None);
-    assert_eq!(status, StatusCode::LENGTH_REQUIRED);
-
-    let (status, out) = put_file(&fx, token, &offer_id, 0, b"hello", Some(99));
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(fx.json(&out)["error"], "size_mismatch");
-}
-
-/// A truncated transfer must leave NOTHING -- neither the file nor the temp.
-/// Renaming a short body into place would present corruption as success.
-#[test]
-fn a_short_body_leaves_no_file_and_no_part() {
-    let (fx, token) = peer_fixture();
-    let offer_id = make_offer(&fx, token, "photo.jpg", 100);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-
-    let (status, _) = put_file(&fx, token, &offer_id, 0, b"short", Some(100));
-    assert_ne!(status, StatusCode::OK);
-    assert!(!fx.receive_dir.join("photo.jpg").exists());
-    let leftovers: Vec<_> = fs::read_dir(&fx.receive_dir)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .collect();
-    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
-}
-
-#[test]
-fn an_oversized_body_is_refused_and_cleaned_up() {
-    let (fx, token) = peer_fixture();
-    let offer_id = make_offer(&fx, token, "photo.jpg", 5);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-
-    let (status, _) = put_file(&fx, token, &offer_id, 0, &vec![b'x'; 5000], Some(5));
-    assert_ne!(status, StatusCode::OK);
-    assert!(!fx.receive_dir.join("photo.jpg").exists());
-    assert_eq!(fs::read_dir(&fx.receive_dir).unwrap().count(), 0);
-}
-
-/// A receiver must never be able to clobber a file the host already has.
-#[test]
-fn receiving_never_overwrites() {
-    let (fx, token) = peer_fixture();
-    write_file(&fx.receive_dir.join("photo.jpg"), "ORIGINAL");
-
-    let offer_id = make_offer(&fx, token, "photo.jpg", 3);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-    let (status, out) = put_file(&fx, token, &offer_id, 0, b"new", Some(3));
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(fx.json(&out)["savedAs"], "photo (2).jpg");
-    assert_eq!(
-        fs::read_to_string(fx.receive_dir.join("photo.jpg")).unwrap(),
-        "ORIGINAL"
-    );
-    assert_eq!(
-        fs::read_to_string(fx.receive_dir.join("photo (2).jpg")).unwrap(),
-        "new"
-    );
-}
-
-#[test]
-fn the_same_index_cannot_be_sent_twice() {
-    let (fx, token) = peer_fixture();
-    let body = r#"{"files":[{"name":"a.txt","size":1},{"name":"b.txt","size":1}]}"#;
-    let (_, _, out) = fx.post_as_peer("/api/peer/offer", token, body);
-    let offer_id = fx.json(&out)["offerId"].as_str().unwrap().to_string();
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-
-    assert_eq!(put_file(&fx, token, &offer_id, 0, b"a", Some(1)).0, StatusCode::OK);
-    let (status, out) = put_file(&fx, token, &offer_id, 0, b"a", Some(1));
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(fx.json(&out)["error"], "already_sent");
-}
-
-#[test]
-fn a_peer_cannot_push_into_another_peers_offer() {
-    let token_a = "INTOKENAAAAAAAAAAAAAAAAA01";
-    let token_b = "INTOKENBBBBBBBBBBBBBBBBB01";
-    let fx = fixture_with(FixtureOpts {
-        peers: vec![test_peer("deva", token_a), test_peer("devb", token_b)],
-        ..Default::default()
-    });
-
-    let offer_id = make_offer(&fx, token_a, "photo.jpg", 3);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-
-    let (status, _) = put_file(&fx, token_b, &offer_id, 0, b"new", Some(3));
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(!fx.receive_dir.join("photo.jpg").exists());
-}
-
-#[test]
-fn an_unknown_file_index_is_refused() {
-    let (fx, token) = peer_fixture();
-    let offer_id = make_offer(&fx, token, "photo.jpg", 3);
-    crate::peers::set_offer_state_ctx(&fx.ctx, &offer_id, true).unwrap();
-    let (status, _) = put_file(&fx, token, &offer_id, 7, b"new", Some(3));
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-#[test]
-fn part_files_are_swept() {
-    let base = tempdir_unique("parts");
-    write_file(&base.join(format!("abc{}", crate::models::PART_SUFFIX)), "x");
-    write_file(&base.join("keep.txt"), "x");
-
-    let removed = crate::transfer::sweep_parts(&base, 0);
-    assert_eq!(removed, 1);
-    assert!(base.join("keep.txt").exists());
-    let _ = fs::remove_dir_all(&base);
 }
 
 // ===========================================================================
@@ -3593,105 +3348,9 @@ fn discovery_health_distinguishes_a_block_from_an_empty_network() {
     assert_eq!(health_from(0, 0, true), "ok");
 }
 
-/// Going invisible stops the beacon, so we stop hearing ourselves -- which is
-/// exactly the signal `health_from` reads as a firewall block. `set_discoverable`
-/// re-stamps the start time when visibility comes back, and this is the rule
-/// that makes that work: without it the Devices page would accuse the firewall
-/// the instant the switch went back on.
-#[test]
-fn re_arming_visibility_clears_a_stale_block_warning() {
-    use crate::discovery::health_from;
-    let now = crate::utils::now_ms();
-
-    // Hidden for ten minutes: no beacon sent, so none heard back.
-    assert_eq!(
-        health_from(now - 600_000, now - 600_000, true),
-        "inbound_likely_blocked"
-    );
-    // Switched back on: the grace window reopens even though the last
-    // self-sighting is still ten minutes old.
-    assert_eq!(health_from(now, now - 600_000, true), "ok");
-}
-
 // ===========================================================================
 // Visibility
 // ===========================================================================
-
-/// The whole visibility switch in one table: what the announce loop owes the
-/// network for each combination of "the user wants to be seen" and "the
-/// network currently believes we are here".
-#[test]
-fn the_visibility_switch_announces_and_says_goodbye_once() {
-    use crate::discovery::{beacon_action, BeaconAction};
-    const PORT: u16 = 57321;
-
-    // Visible: announce on every pass, whether or not we already were.
-    assert_eq!(beacon_action(true, PORT, false), BeaconAction::Announce);
-    assert_eq!(beacon_action(true, PORT, true), BeaconAction::Announce);
-    // Switched off while the network thinks we are here: exactly one goodbye.
-    assert_eq!(beacon_action(false, PORT, true), BeaconAction::Goodbye);
-    // Already hidden: silence, not a goodbye every five seconds.
-    assert_eq!(beacon_action(false, PORT, false), BeaconAction::Nothing);
-    // Never announced, then stopped: nothing to take back.
-    assert_eq!(beacon_action(false, PORT, false), BeaconAction::Nothing);
-    // No port is nowhere to send, goodbye included.
-    assert_eq!(beacon_action(true, 0, true), BeaconAction::Nothing);
-    assert_eq!(beacon_action(false, 0, true), BeaconAction::Nothing);
-}
-
-/// One visible period produces one goodbye, at the moment the switch flips --
-/// not one per tick, and not one at shutdown for a device that was already
-/// hidden.
-#[test]
-fn a_hidden_device_falls_silent_after_a_single_goodbye() {
-    use crate::discovery::{beacon_action, BeaconAction};
-    const PORT: u16 = 57321;
-
-    // Five ticks visible, then five hidden.
-    let visibility = [true, true, true, true, true, false, false, false, false, false];
-    let mut announcing = false;
-    let mut sent: Vec<BeaconAction> = Vec::new();
-
-    for visible in visibility {
-        let action = beacon_action(visible, PORT, announcing);
-        match action {
-            BeaconAction::Announce => announcing = true,
-            BeaconAction::Goodbye => announcing = false,
-            BeaconAction::Nothing => {}
-        }
-        if action != BeaconAction::Nothing {
-            sent.push(action);
-        }
-    }
-
-    assert_eq!(sent.iter().filter(|a| **a == BeaconAction::Goodbye).count(), 1);
-    assert_eq!(sent.last(), Some(&BeaconAction::Goodbye));
-    // And the loop knows not to send a second one on shutdown.
-    assert!(!announcing);
-}
-
-/// The switch pokes the announce loop so it acts now rather than up to five
-/// seconds later. `notify_one` is load-bearing: it leaves a permit when the
-/// loop is mid-send and therefore not yet waiting, where `notify_waiters`
-/// would drop the poke on the floor and the device would stay visible for
-/// another tick.
-#[test]
-fn a_visibility_poke_survives_a_busy_announce_loop() {
-    let notify = tokio::sync::Notify::new();
-
-    // Poked while the loop is off sending beacons, not yet at its select!.
-    notify.notify_one();
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        tokio::time::timeout(std::time::Duration::from_millis(250), notify.notified())
-            .await
-            .expect("the poke was lost, so the switch would wait for the next tick");
-    });
-}
 
 /// `set_discoverable` restarts the server only when the discovery socket is
 /// genuinely missing. Stopping has to clear the flag, or the next start would
@@ -3799,22 +3458,6 @@ fn clean_device_name_strips_controls_and_bidi_overrides() {
     assert_eq!(clean_device_name("\u{2066}sneaky\u{2069}"), "sneaky");
     assert!(clean_device_name(&"x".repeat(200)).chars().count() <= crate::models::DEVICE_NAME_MAX);
     assert_eq!(clean_device_name("Rajan's PC"), "Rajan's PC");
-}
-
-#[test]
-fn peer_defaults_are_safe() {
-    let config = AppConfig::default();
-    assert!(config.peering_enabled);
-    assert!(config.discoverable);
-    assert!(config.peer_browse_enabled);
-    assert!(config.peers.is_empty());
-    assert!(config.receive_dir.is_none());
-
-    let peer = test_peer("x", "y");
-    // A newly paired device must never be silently trusted with unattended
-    // receipt -- that is a decision the user makes afterwards, per device.
-    assert!(!peer.auto_accept);
-    assert!(!peer.blocked);
 }
 
 #[test]

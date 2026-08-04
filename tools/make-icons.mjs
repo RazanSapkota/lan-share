@@ -61,7 +61,6 @@ const GEOM = {
   // high if the grid itself were centred. Nudge it, rather than rewriting every
   // coordinate.
   offset: { x: -0.1, y: 1.0 },
-  tile: { radius: 0.225 }, // fraction of the edge
 };
 
 /// Arc thickness and the gap around it, for a given tile size.
@@ -74,11 +73,14 @@ function strokeFor(size) {
   return { width: GEOM.arcs.width, gap: GEOM.arcs.gap };
 }
 
-const TILE_BG = [0x0b, 0x0b, 0x0d];
 // Emerald, top to bottom. Flat colour reads as a sticker at 256px; two stops is
 // enough depth without turning the glyph into a gradient exercise.
+//
+// The bottom stop is lifted from the emerald-600 it started at: with no tile
+// behind it the mark has to hold its own against a white taskbar as well as a
+// black one, and the darker green went muddy on light.
 const GLYPH_TOP = [0x34, 0xd3, 0x99];
-const GLYPH_BOTTOM = [0x05, 0x96, 0x69];
+const GLYPH_BOTTOM = [0x0f, 0x9f, 0x76];
 
 // ---------------------------------------------------------------------------
 // Coverage functions. Each returns 0..1 for a point in 24x24 space; the
@@ -162,13 +164,15 @@ function glyphCoverage(x, y, simple, stroke) {
 // being scaled by the shell to whatever size it feels like.
 const SAMPLES = 8;
 
-/// Padding inside the tile, as a fraction of the edge.
+/// Padding around the mark, as a fraction of the edge.
 ///
-/// Kept tight on purpose. The 24-unit grid already carries ~15% of slack around
-/// the drawing, so an inset that reads as generous on paper leaves the mark
-/// looking marooned in the middle of a taskbar button.
-function insetFor(size) {
-  return size <= 48 ? 0.05 : 0.07;
+/// Almost none. There is no tile to sit inside any more, so the drawing runs to
+/// the edges of the canvas the way every other taskbar icon does -- anything
+/// more and this one looks a size smaller than its neighbours, which is the
+/// entire complaint the tile caused. The sliver that remains is so the arcs'
+/// round caps are not clipped by the edge.
+function insetFor(_size) {
+  return 0.02;
 }
 
 function mix(a, b, t) {
@@ -181,57 +185,39 @@ function mix(a, b, t) {
 
 /// Render the mark at `size`, returning RGBA bytes.
 ///
-/// `tile` draws the rounded dark square behind it (the app icon); without it the
-/// glyph is rendered on transparency.
-function render(size, { tile = true, simple = false, inset = 0.19 } = {}) {
+/// The mark alone, on transparency. There is no plate behind it: a tile inset
+/// from the canvas edges, with the glyph inset again inside that, is why this
+/// icon used to sit visibly smaller in the taskbar than everything beside it.
+function render(size, { simple = false } = {}) {
   const px = Buffer.alloc(size * size * 4);
-  const tileRadius = size * GEOM.tile.radius;
-  // The glyph sits inside the tile with breathing room; on transparency it can
-  // use the whole canvas.
-  const pad = tile ? size * inset : size * 0.02;
+  const pad = size * insetFor(size);
   const scale = (size - pad * 2) / 24;
   const stroke = strokeFor(size);
+  const total = SAMPLES * SAMPLES;
 
   for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      let tileHits = 0;
-      let glyphHits = 0;
+    // One gradient stop per row: the ramp runs down the icon, so every pixel in
+    // a row is the same colour and only the coverage changes.
+    const glyph = mix(GLYPH_TOP, GLYPH_BOTTOM, size === 1 ? 0 : y / (size - 1));
 
+    for (let x = 0; x < size; x++) {
+      let hits = 0;
       for (let sy = 0; sy < SAMPLES; sy++) {
         for (let sx = 0; sx < SAMPLES; sx++) {
-          const px_ = x + (sx + 0.5) / SAMPLES;
-          const py_ = y + (sy + 0.5) / SAMPLES;
-          if (tile && insideRoundedRect(px_, py_, 0, 0, size, size, tileRadius)) {
-            tileHits++;
-          }
-          const gx = (px_ - pad) / scale - GEOM.offset.x;
-          const gy = (py_ - pad) / scale - GEOM.offset.y;
-          if (glyphCoverage(gx, gy, simple, stroke)) glyphHits++;
+          const gx = (x + (sx + 0.5) / SAMPLES - pad) / scale - GEOM.offset.x;
+          const gy = (y + (sy + 0.5) / SAMPLES - pad) / scale - GEOM.offset.y;
+          if (glyphCoverage(gx, gy, simple, stroke)) hits++;
         }
       }
 
-      const total = SAMPLES * SAMPLES;
-      const tileA = tile ? tileHits / total : 0;
-      const glyphA = glyphHits / total;
-      const glyph = mix(GLYPH_TOP, GLYPH_BOTTOM, y / (size - 1));
-
-      // Composite: glyph over tile over transparency.
-      const alpha = Math.max(tileA, glyphA);
-      let rgb;
-      if (alpha === 0) {
-        rgb = [0, 0, 0];
-      } else if (glyphA >= 1) {
-        rgb = glyph;
-      } else {
-        const base = tileA > 0 ? TILE_BG : glyph;
-        rgb = mix(base, glyph, tileA > 0 ? glyphA : 1);
-      }
-
       const i = (y * size + x) * 4;
-      px[i] = rgb[0];
-      px[i + 1] = rgb[1];
-      px[i + 2] = rgb[2];
-      px[i + 3] = Math.round(alpha * 255);
+      // Straight alpha with the colour carried through even at zero coverage:
+      // a transparent pixel that is black underneath fringes dark when the
+      // shell composites it against a light background.
+      px[i] = glyph[0];
+      px[i + 1] = glyph[1];
+      px[i + 2] = glyph[2];
+      px[i + 3] = Math.round((hits / total) * 255);
     }
   }
   return px;
@@ -382,11 +368,11 @@ function icns(entries) {
 // Write everything
 // ---------------------------------------------------------------------------
 
-const tiles = new Map();
-function tileAt(size, simple = false) {
+const cache = new Map();
+function markAt(size, simple = false) {
   const key = `${size}:${simple}`;
-  if (!tiles.has(key)) tiles.set(key, render(size, { tile: true, simple, inset: insetFor(size) }));
-  return tiles.get(key);
+  if (!cache.has(key)) cache.set(key, render(size, { simple }));
+  return cache.get(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -454,45 +440,55 @@ if (previewAt !== -1) {
   const sizes = [16, 24, 32, 48, 64, 128];
   const zoom = 6;
   const pad = 12;
+  // Three bands. With no tile behind it the mark has to carry itself on a dark
+  // taskbar, a light one, and the mid-tone of a photo wallpaper -- so all three
+  // are on screen at once rather than checked one at a time and forgotten.
+  const BANDS = [
+    [0x18, 0x18, 0x1b],
+    [0x80, 0x80, 0x86],
+    [0xf4, 0xf4, 0xf5],
+  ];
+  // Magnified row, a gap, the 1:1 row, and padding top and bottom.
+  const bandHeight = pad + 128 * zoom + 10 + 128 + pad;
   const width = sizes.reduce((w, s) => w + s * zoom + pad, pad);
-  const height = 128 * zoom + pad * 2;
+  const height = bandHeight * BANDS.length;
   const sheet = Buffer.alloc(width * height * 4);
-  // Mid grey: an icon that only works on one background is not finished.
-  for (let i = 0; i < width * height; i++) {
-    sheet[i * 4] = 0x80;
-    sheet[i * 4 + 1] = 0x80;
-    sheet[i * 4 + 2] = 0x86;
-    sheet[i * 4 + 3] = 0xff;
-  }
 
-  let x0 = pad;
-  for (const size of sizes) {
-    const src = tileAt(size, size <= 32);
-    for (let y = 0; y < size * zoom; y++) {
-      for (let x = 0; x < size * zoom; x++) {
-        const s = (Math.floor(y / zoom) * size + Math.floor(x / zoom)) * 4;
-        const d = ((y + pad) * width + x0 + x) * 4;
+  const blit = (src, size, dx, dy, scale) => {
+    for (let y = 0; y < size * scale; y++) {
+      for (let x = 0; x < size * scale; x++) {
+        const s = (Math.floor(y / scale) * size + Math.floor(x / scale)) * 4;
+        const d = ((dy + y) * width + dx + x) * 4;
         const a = src[s + 3] / 255;
         for (let c = 0; c < 3; c++) {
           sheet[d + c] = Math.round(sheet[d + c] * (1 - a) + src[s + c] * a);
         }
       }
     }
-    // The same tile at 1:1 underneath, which is the size it will actually be
-    // seen at.
-    const trueY = pad + size * zoom + 10;
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const s = (y * size + x) * 4;
-        const d = ((trueY + y) * width + x0 + x) * 4;
-        const a = src[s + 3] / 255;
-        for (let c = 0; c < 3; c++) {
-          sheet[d + c] = Math.round(sheet[d + c] * (1 - a) + src[s + c] * a);
-        }
+  };
+
+  BANDS.forEach((bg, band) => {
+    const top = band * bandHeight;
+    for (let y = top; y < top + bandHeight; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        sheet[i] = bg[0];
+        sheet[i + 1] = bg[1];
+        sheet[i + 2] = bg[2];
+        sheet[i + 3] = 0xff;
       }
     }
-    x0 += size * zoom + pad;
-  }
+
+    let x0 = pad;
+    for (const size of sizes) {
+      const src = markAt(size, size <= 32);
+      blit(src, size, x0, top + pad, zoom);
+      // The same mark at 1:1 underneath, which is the size it is actually seen
+      // at -- the magnified one flatters everything.
+      blit(src, size, x0, top + pad + size * zoom + 10, 1);
+      x0 += size * zoom + pad;
+    }
+  });
 
   writeFileSync(target, png2(width, height, sheet));
   console.log("wrote preview to", target);
@@ -502,9 +498,9 @@ if (previewAt !== -1) {
 mkdirSync(OUT, { recursive: true });
 
 // Tauri's five, straight from tauri.conf.json.
-writeFileSync(join(OUT, "32x32.png"), png(32, tileAt(32, true)));
-writeFileSync(join(OUT, "128x128.png"), png(128, tileAt(128)));
-writeFileSync(join(OUT, "128x128@2x.png"), png(256, tileAt(256)));
+writeFileSync(join(OUT, "32x32.png"), png(32, markAt(32, true)));
+writeFileSync(join(OUT, "128x128.png"), png(128, markAt(128)));
+writeFileSync(join(OUT, "128x128@2x.png"), png(256, markAt(256)));
 
 // The exe icon. Every size Windows actually asks for -- 16/20/24/32 in lists
 // and the title bar, 40 at 125% DPI, 48/64 on the taskbar and Alt-Tab, 96 and
@@ -517,16 +513,16 @@ writeFileSync(join(OUT, "128x128@2x.png"), png(256, tileAt(256)));
 writeFileSync(
   join(OUT, "icon.ico"),
   ico([
-    { size: 16, data: dib(16, tileAt(16, true)) },
-    { size: 20, data: dib(20, tileAt(20, true)) },
-    { size: 24, data: dib(24, tileAt(24, true)) },
-    { size: 32, data: dib(32, tileAt(32, true)) },
-    { size: 40, data: dib(40, tileAt(40)) },
-    { size: 48, data: dib(48, tileAt(48)) },
-    { size: 64, data: png(64, tileAt(64)) },
-    { size: 96, data: png(96, tileAt(96)) },
-    { size: 128, data: png(128, tileAt(128)) },
-    { size: 256, data: png(256, tileAt(256)) },
+    { size: 16, data: dib(16, markAt(16, true)) },
+    { size: 20, data: dib(20, markAt(20, true)) },
+    { size: 24, data: dib(24, markAt(24, true)) },
+    { size: 32, data: dib(32, markAt(32, true)) },
+    { size: 40, data: dib(40, markAt(40)) },
+    { size: 48, data: dib(48, markAt(48)) },
+    { size: 64, data: png(64, markAt(64)) },
+    { size: 96, data: png(96, markAt(96)) },
+    { size: 128, data: png(128, markAt(128)) },
+    { size: 256, data: png(256, markAt(256)) },
   ])
 );
 
@@ -535,25 +531,25 @@ writeFileSync(
 writeFileSync(
   join(OUT, "favicon.ico"),
   ico([
-    { size: 16, data: dib(16, tileAt(16, true)) },
-    { size: 32, data: dib(32, tileAt(32, true)) },
+    { size: 16, data: dib(16, markAt(16, true)) },
+    { size: 32, data: dib(32, markAt(32, true)) },
   ])
 );
 
 writeFileSync(
   join(OUT, "icon.icns"),
   icns([
-    { type: "ic11", data: png(32, tileAt(32, true)) },
-    { type: "ic12", data: png(64, tileAt(64)) },
-    { type: "ic07", data: png(128, tileAt(128)) },
-    { type: "ic08", data: png(256, tileAt(256)) },
-    { type: "ic09", data: png(512, tileAt(512)) },
+    { type: "ic11", data: png(32, markAt(32, true)) },
+    { type: "ic12", data: png(64, markAt(64)) },
+    { type: "ic07", data: png(128, markAt(128)) },
+    { type: "ic08", data: png(256, markAt(256)) },
+    { type: "ic09", data: png(512, markAt(512)) },
   ])
 );
 
 // Manifest icons. Chrome on Android will not offer "Add to Home Screen" for an
 // SVG-only icon set, so these are what make the manifest more than decorative.
-writeFileSync(join(OUT, "icon-192.png"), png(192, tileAt(192)));
-writeFileSync(join(OUT, "icon-512.png"), png(512, tileAt(512)));
+writeFileSync(join(OUT, "icon-192.png"), png(192, markAt(192)));
+writeFileSync(join(OUT, "icon-512.png"), png(512, markAt(512)));
 
 console.log("wrote icons to", OUT);

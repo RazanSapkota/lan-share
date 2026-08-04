@@ -73,14 +73,14 @@
                 <span class="material-symbols-outlined">folder_shared</span>
                 <span class="sidebar-label">Shares</span>
               </a>
+              <a class="sidebar-link" href="#" data-sidebar-link="network">
+                <span class="material-symbols-outlined">travel_explore</span>
+                <span class="sidebar-label">Network</span>
+              </a>
               <a class="sidebar-link" href="#" data-sidebar-link="devices">
                 <span class="material-symbols-outlined">devices</span>
                 <span class="sidebar-label">Devices</span>
                 <span class="sidebar-badge hidden" id="devices-badge">0</span>
-              </a>
-              <a class="sidebar-link" href="#" data-sidebar-link="preview">
-                <span class="material-symbols-outlined">preview</span>
-                <span class="sidebar-label">Preview</span>
               </a>
               <a class="sidebar-link" href="#" data-sidebar-link="activity">
                 <span class="material-symbols-outlined">monitoring</span>
@@ -278,11 +278,86 @@
           </article>
         </section>
 
+        <!-- =========================== Network =========================== -->
+        <!-- What other devices share with you. The mirror of the Shares page,
+             which is what you share with them. -->
+        <section id="network-view" class="app-main hidden">
+          <p class="hero-copy">
+            Folders the devices you have paired with are sharing. Browse them, preview what is
+            inside, and pull down whatever you want — nothing is copied until you ask for it.
+          </p>
+
+          <div class="section-stack">
+            <article class="card net-card">
+              <div class="shares-toolbar net-toolbar">
+                <select id="net-device" class="iface-select"
+                        data-tip="Which paired device to browse. Pair a new one on the Devices page."></select>
+                <button id="net-up" class="ghost-button" type="button"
+                        data-tip="Up one folder, and from the top back to that device's list of shares.">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                  <span>Back</span>
+                </button>
+                <span class="net-crumbs mono" id="net-crumbs"></span>
+                <span class="spacer"></span>
+                <span class="count-pill" id="net-count">0</span>
+                <div class="mode-switch" id="net-view-mode" role="tablist"
+                     data-tip="Grid shows thumbnails; list shows sizes and dates.">
+                  <button class="mode-button active" type="button" data-net-mode="grid">Grid</button>
+                  <button class="mode-button" type="button" data-net-mode="list">List</button>
+                </div>
+                <div class="input-with-icon shares-search">
+                  <span class="material-symbols-outlined input-leading-icon">search</span>
+                  <input id="net-filter" type="search" placeholder="Filter this folder"
+                         data-tip="Narrow what is shown. It does not search subfolders." />
+                </div>
+              </div>
+
+              <!-- Selection bar. Zipping is a choice, not a consequence of how
+                   many things you ticked. -->
+              <div class="net-selection hidden" id="net-selection">
+                <label class="check-row">
+                  <input type="checkbox" id="net-select-all" />
+                  <span id="net-selected-text">0 selected</span>
+                </label>
+                <span class="spacer"></span>
+                <button id="net-download" class="primary-button" type="button"
+                        data-tip="Save each of these separately. Folders arrive as folders.">
+                  <span class="material-symbols-outlined">download</span>
+                  <span>Download</span>
+                </button>
+                <button id="net-download-zip" class="ghost-button" type="button"
+                        data-tip="Save all of it as one .zip instead.">
+                  <span class="material-symbols-outlined">folder_zip</span>
+                  <span>Download as .zip</span>
+                </button>
+                <button id="net-clear-selection" class="ghost-button" type="button"
+                        data-tip="Untick everything.">Clear</button>
+              </div>
+
+              <div id="net-body" class="net-body" aria-live="polite"></div>
+            </article>
+
+            <!-- Downloads in flight. Lives on the page that starts them. -->
+            <article class="card hidden" id="net-downloads-card">
+              <div class="card-head">
+                <h3 data-tip="Files being pulled from another device. Rows clear themselves once they finish.">Downloads</h3>
+                <span class="spacer"></span>
+                <button id="net-downloads-clear" class="ghost-button" type="button"
+                        data-tip="Remove the finished rows.">
+                  <span class="material-symbols-outlined">clear_all</span>
+                  <span>Clear finished</span>
+                </button>
+              </div>
+              <div id="net-downloads" class="net-downloads"></div>
+            </article>
+          </div>
+        </section>
+
         <!-- =========================== Devices =========================== -->
         <section id="devices-view" class="app-main hidden">
           <p class="hero-copy">
-            Other computers running LAN Share on this network appear here. Pair once, then send
-            files straight to each other.
+            Other computers running LAN Share on this network appear here. Pair once, and their
+            shared folders show up under Network.
           </p>
 
           <div class="section-stack">
@@ -302,32 +377,13 @@
                     <span id="self-addr" class="mono text-dim"></span>
                   </div>
                 </div>
+                <!-- Presence follows the server, and nothing else. Sharing your
+                     folders and being findable are one decision, so there is one
+                     switch for it, on the Dashboard. -->
                 <span id="visibility-pill" class="pill pill-off self-visible"
-                      data-tip="Whether this device is actually announcing itself right now. It can read Hidden even with the switch on — for instance while the server is stopped.">
+                      data-tip="Other devices can see this one while the server is running. Start or stop it on the Dashboard.">
                   <span class="pill-dot"></span><span id="visibility-pill-text">Hidden</span>
                 </span>
-              </div>
-
-              <!-- Visibility: the same switch the Dashboard uses for the server,
-                   because it is the same kind of decision — on or off, right now. -->
-              <div class="power-card visibility-card">
-                <button id="visibility-toggle" class="power-toggle" type="button"
-                        aria-label="Make this device visible or hidden to other devices"
-                        aria-pressed="false"
-                        data-tip="Announce this device to the network, or go quiet. Hidden still sees everyone else, and devices you have already paired with can still reach you."></button>
-                <div class="power-label">
-                  <span class="power-title" id="visibility-title">Hidden</span>
-                  <span class="power-sub" id="visibility-sub">Other devices can't see this one.</span>
-                </div>
-              </div>
-
-              <div class="self-foot">
-                <span class="material-symbols-outlined">folder</span>
-                <span class="text-muted">Files people send me go to</span>
-                <span id="self-receive" class="mono text-dim"
-                      data-tip="Where files sent by a paired device are saved. Nothing here is ever overwritten — a duplicate name becomes “photo (2).jpg”."></span>
-                <button id="self-receive-pick" class="ghost-button" type="button"
-                        data-tip="Choose a different folder for incoming files.">Change</button>
               </div>
             </article>
 
@@ -340,32 +396,11 @@
               </div>
             </div>
 
-            <!-- Send to a phone -->
-            <article class="card">
-              <div class="card-head">
-                <span class="material-symbols-outlined" style="color:var(--text-dim)">smartphone</span>
-                <h3>Send to a phone</h3>
-                <span class="spacer"></span>
-                <button id="handoff-pick" class="ghost-button" type="button"
-                        data-tip="Pick files for a phone. You get a QR code and a one-hour link that opens only those files — no PIN, no pairing.">
-                  <span class="material-symbols-outlined">attach_file</span>
-                  <span>Pick files</span>
-                </button>
-              </div>
-              <div class="handoff-body">
-                <p class="text-muted handoff-hint">
-                  Phones can't run this app, so they get a link instead. Pick files and scan the
-                  code — the link stops working after an hour.
-                </p>
-                <div id="handoff-list" class="handoff-list"></div>
-              </div>
-            </article>
-
             <!-- Nearby -->
             <article class="card">
               <div class="card-head device-card-head">
                 <span class="radar" id="radar" aria-hidden="true"
-                      data-tip="Sweeping means this device is listening for others. It keeps sweeping while you are hidden."></span>
+                      data-tip="Sweeping means this device is listening for others."></span>
                 <h3 data-tip="Other computers running LAN Share on this Wi-Fi. They appear within about five seconds of starting up.">Nearby devices</h3>
                 <span class="count-pill" id="nearby-count">0</span>
                 <span class="spacer"></span>
@@ -381,56 +416,12 @@
             <!-- Paired -->
             <article class="card">
               <div class="card-head">
-                <h3 data-tip="Devices you have paired with. They can send you files and browse your shares without the PIN, and the list survives restarts.">My devices</h3>
+                <h3 data-tip="Devices you have paired with. You can browse what they share, and they can browse what you share, without either of you typing a PIN.">Connected devices</h3>
                 <span class="count-pill" id="paired-count">0</span>
               </div>
               <div id="paired-list" class="device-list"></div>
             </article>
-
-            <!-- Transfers -->
-            <article class="card" id="transfers-card">
-              <div class="card-head">
-                <h3 data-tip="Files moving to or from a paired device, in both directions, with live speed and progress.">Transfers</h3>
-                <span class="count-pill" id="transfers-count">0</span>
-                <span class="spacer"></span>
-                <button id="transfers-clear" class="ghost-button" type="button"
-                        data-tip="Tidy the list: removes finished, failed and cancelled rows. Anything still running stays.">
-                  <span class="material-symbols-outlined">clear_all</span>
-                  <span>Clear finished</span>
-                </button>
-              </div>
-              <div id="transfers-list" class="transfer-list" aria-live="polite"></div>
-            </article>
           </div>
-        </section>
-
-        <!-- =========================== Preview =========================== -->
-        <section id="preview-view" class="app-main hidden">
-          <p class="hero-copy">
-            Exactly what people on your network see, loaded from this machine through the real
-            share link — so anything hidden here is hidden for them too.
-          </p>
-
-          <article class="card">
-            <div class="preview-bar">
-              <select id="preview-share" class="iface-select"
-                      data-tip="Which share to look at through a visitor's eyes."></select>
-              <button id="preview-reload" class="ghost-button" type="button"
-                      data-tip="Reload the preview after adding files or changing what this share exposes.">
-                <span class="material-symbols-outlined">refresh</span>
-                <span>Reload</span>
-              </button>
-              <span class="preview-url" id="preview-url"
-                    data-tip="The real link this preview is loaded from — the same one a visitor would use."></span>
-            </div>
-            <div class="preview-frame-wrap hidden" id="preview-frame-wrap">
-              <iframe class="preview-frame" id="preview-frame" title="Receiver preview"></iframe>
-            </div>
-            <div class="preview-placeholder" id="preview-placeholder">
-              <span class="material-symbols-outlined">preview</span>
-              <span id="preview-placeholder-text">Start the server and add a share to preview it.</span>
-            </div>
-          </article>
         </section>
 
         <!-- =========================== Activity ========================== -->
@@ -783,22 +774,6 @@
       </aside>
     </div>
 
-    <!-- ===================== Send to phone ============================= -->
-    <div class="dialog-backdrop hidden" id="handoff-backdrop">
-      <div class="dialog-card pair-card" role="dialog" aria-modal="true" aria-labelledby="handoff-title">
-        <h3 id="handoff-title">Scan this with the phone</h3>
-        <div class="qr-frame" id="handoff-qr" style="margin:14px auto"></div>
-        <p class="mono text-dim" id="handoff-url" style="word-break:break-all;font-size:11.5px"></p>
-        <p class="text-muted" id="handoff-meta"></p>
-        <div class="dialog-actions">
-          <button id="handoff-copy" class="ghost-button" type="button"
-                  data-tip="Copy the link, to paste into a chat instead of scanning.">Copy link</button>
-          <button id="handoff-done" class="primary-button" type="button"
-                  data-tip="Close this. The link keeps working for an hour — revoke it in the list to cut it off sooner.">Done</button>
-        </div>
-      </div>
-    </div>
-
     <!-- ===================== Pairing: outgoing ========================== -->
     <!-- No confirm button at all. This device cannot complete the pairing --
          all the authority sits on the screen you walked over to. -->
@@ -852,35 +827,6 @@
       </div>
     </div>
 
-    <!-- ===================== Incoming file offer ======================== -->
-    <div class="dialog-backdrop hidden" id="offer-backdrop">
-      <div class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="offer-title">
-        <h3 id="offer-title"><span id="offer-peer"></span> wants to send you files</h3>
-        <div class="offer-summary">
-          <span class="material-symbols-outlined">download</span>
-          <span id="offer-summary-text"></span>
-        </div>
-        <ul class="offer-files" id="offer-files"></ul>
-        <p class="offer-dest text-dim">They will be saved to <span id="offer-dest" class="mono"></span></p>
-        <label class="settings-toggle-card" style="margin-top:12px">
-          <input type="checkbox" id="offer-always" />
-          <span class="settings-toggle-box" aria-hidden="true">
-            <span class="material-symbols-outlined">check</span>
-          </span>
-          <span class="settings-toggle-text">
-            <span class="settings-toggle-title">Always accept from this device</span>
-            <span class="settings-toggle-desc">Future transfers land without asking.</span>
-          </span>
-        </label>
-        <div class="dialog-actions">
-          <button id="offer-decline" class="ghost-button" type="button"
-                  data-tip="Refuse the files. Not a byte is written to disk.">Decline</button>
-          <button id="offer-accept" class="primary-button" type="button"
-                  data-tip="Start receiving. Files land in the folder shown above and nothing there is overwritten.">Accept</button>
-        </div>
-      </div>
-    </div>
-
     <!-- ===================== Add device by address ====================== -->
     <div class="dialog-backdrop hidden" id="addip-backdrop">
       <div class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="addip-title">
@@ -905,23 +851,36 @@
       </div>
     </div>
 
-    <!-- ===================== Browse a paired device ===================== -->
-    <div class="dialog-backdrop hidden" id="browse-backdrop">
-      <div class="dialog-card browse-card" role="dialog" aria-modal="true" aria-labelledby="browse-title">
-        <h3 id="browse-title">Browsing <span id="browse-peer"></span></h3>
-        <div class="browse-bar">
-          <button id="browse-up" class="ghost-button" type="button"
-                  data-tip="Up one folder, and from the top back to the list of that device's shares.">
-            <span class="material-symbols-outlined">arrow_back</span>
-            <span>Back</span>
-          </button>
-          <span class="browse-path mono" id="browse-path"></span>
-        </div>
-        <div class="browse-list" id="browse-list"></div>
-        <div class="dialog-actions">
-          <button id="browse-close" class="ghost-button" type="button">Close</button>
-        </div>
+    <!-- ================== Network preview (lightbox) ==================== -->
+    <!-- Full-size media from another device. The image or video loads from a
+         play link on that machine, so it streams and seeks rather than being
+         copied here first. -->
+    <div class="net-viewer hidden" id="net-viewer" role="dialog" aria-modal="true" aria-label="Preview">
+      <div class="net-viewer-bar">
+        <span class="net-viewer-name" id="net-viewer-name"></span>
+        <span class="spacer"></span>
+        <button id="net-viewer-play" class="ghost-button" type="button"
+                data-tip="Open this in your own media player, streaming from that device.">
+          <span class="material-symbols-outlined">play_circle</span>
+          <span>Open in player</span>
+        </button>
+        <button id="net-viewer-download" class="ghost-button" type="button"
+                data-tip="Save this file to your Downloads folder.">
+          <span class="material-symbols-outlined">download</span>
+          <span>Download</span>
+        </button>
+        <button id="net-viewer-close" class="icon-button" type="button" aria-label="Close"
+                data-tip="Close (Esc)">
+          <span class="material-symbols-outlined">close</span>
+        </button>
       </div>
+      <button id="net-viewer-prev" class="net-viewer-nav" type="button" aria-label="Previous">
+        <span class="material-symbols-outlined">chevron_left</span>
+      </button>
+      <div class="net-viewer-stage" id="net-viewer-stage"></div>
+      <button id="net-viewer-next" class="net-viewer-nav net-viewer-next" type="button" aria-label="Next">
+        <span class="material-symbols-outlined">chevron_right</span>
+      </button>
     </div>
 
     <!-- =========================== Share editor ========================= -->

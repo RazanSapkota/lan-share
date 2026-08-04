@@ -17,12 +17,12 @@
     11  Shares — data
     12  Shares — render
     13  Shares — index task
-    14  Preview page
     15  Activity page
     16  Settings page
     17  Event wiring + boot
-    18  Devices — discovery, pairing, transfers
-    19  Tooltips
+    18  Devices — discovery and pairing
+    19  Network — browsing another device's shares
+    20  Tooltips
    ========================================================= */
 
 // ============================================================
@@ -36,7 +36,7 @@ const SERVER_POLL_MS = 1000;
 const ACTIVITY_POLL_MS = 1500;
 const ACTIVITY_LIMIT = 300;
 
-const PAGES = ["dashboard", "shares", "devices", "preview", "activity", "settings"];
+const PAGES = ["dashboard", "shares", "network", "devices", "activity", "settings"];
 
 const THEMES = [
   "light", "dark", "nord", "solarized", "monolith", "amber",
@@ -95,7 +95,6 @@ const state = {
     lastId: 0,
   },
 
-  preview: { shareId: "", url: "" },
   pinRevealed: false,
   qrCache: {},
   pendingConfirm: null,
@@ -409,12 +408,11 @@ const PAGE_ENTER = {
     renderDashboard();
   },
   shares: () => loadShares(),
+  network: () => enterNetwork(),
   devices: () => {
     loadIdentity();
-    loadHandoffs();
     startDevicesTick();
   },
-  preview: () => renderPreview(),
   activity: () => {
     startActivityPoll();
     renderActivity();
@@ -678,7 +676,6 @@ async function loadShares() {
   state.shares.items = Array.isArray(items) ? items : [];
   renderSharesTable();
   renderInboxOptions();
-  renderPreviewOptions();
   if (state.currentPage === "dashboard") renderDashboard();
 }
 
@@ -1062,48 +1059,6 @@ async function startShareIndex(shareId) {
 // You see exactly what receivers see — including anything that leaks — and it
 // exercises the genuine token-auth path, with no second UI to keep in sync.
 
-function renderPreviewOptions() {
-  const select = $("preview-share");
-  if (!select) return;
-  const shares = state.shares.items.filter((s) => s.enabled);
-  select.innerHTML = shares.length
-    ? shares.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join("")
-    : '<option value="">No shares</option>';
-  if (state.preview.shareId) select.value = state.preview.shareId;
-  else if (shares.length) state.preview.shareId = shares[0].id;
-}
-
-function renderPreview() {
-  const wrap = $("preview-frame-wrap");
-  const placeholder = $("preview-placeholder");
-  const share = state.shares.items.find((s) => s.id === $("preview-share").value);
-
-  if (!state.server.running) {
-    wrap.classList.add("hidden");
-    placeholder.classList.remove("hidden");
-    $("preview-placeholder-text").textContent = "Start the server to preview it.";
-    $("preview-url").textContent = "";
-    return;
-  }
-  if (!share) {
-    wrap.classList.add("hidden");
-    placeholder.classList.remove("hidden");
-    $("preview-placeholder-text").textContent = "Add a folder on the Shares page first.";
-    $("preview-url").textContent = "";
-    return;
-  }
-
-  // Loopback, not the LAN address: this must work even when the firewall is
-  // blocking external connections, which is precisely when you want to look.
-  const url = "http://127.0.0.1:" + state.server.port + "/s/" + share.token;
-  state.preview.url = url;
-  state.preview.shareId = share.id;
-  $("preview-url").textContent = url;
-  $("preview-frame").src = url;
-  wrap.classList.remove("hidden");
-  placeholder.classList.add("hidden");
-}
-
 // ============================================================
 // 15  Activity page
 // ============================================================
@@ -1335,15 +1290,6 @@ function wire() {
     state.shares.editing = null;
   });
 
-  // --- preview ---
-  $("preview-share").addEventListener("change", renderPreview);
-  $("preview-reload").addEventListener("click", () => {
-    const frame = $("preview-frame");
-    // Re-assigning the same src does not always reload; clearing it first does.
-    frame.src = "about:blank";
-    setTimeout(renderPreview, 40);
-  });
-
   // --- activity ---
   $("activity-filter").addEventListener("click", (event) => {
     const button = event.target.closest("[data-filter]");
@@ -1444,6 +1390,7 @@ function wire() {
   });
 
   wireDevices();
+  wireNetwork();
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
@@ -1507,16 +1454,6 @@ state.devices = {
   peers: [],
   filter: "",
   tickTimer: null,
-  // Latched while set_discoverable is in flight, exactly like the server
-  // toggle's `transitioning`, so a double-click cannot fire twice.
-  visibilityBusy: false,
-};
-
-state.transfers = {
-  items: [],
-  // Per-transfer sampling for the speed readout. Outside `items` so a refresh
-  // that replaces the rows does not reset every rate to zero.
-  rates: {},
 };
 
 state.pairing = {
@@ -1528,8 +1465,6 @@ state.pairing = {
   acceptArmedAt: 0,
 };
 
-state.offers = { shownId: null, items: [] };
-state.browse = { peerId: null, peerName: "", shareId: null, path: "" };
 
 // --- helpers ---------------------------------------------------------------
 
@@ -1597,39 +1532,26 @@ function stopDevicesTick() {
 /// One tick for the whole page. Four independent intervals hammering the
 /// backend would be four times the work for the same information.
 async function refreshDevices() {
-  const [discovery, peers, transfers] = await Promise.all([
+  const [discovery, peers] = await Promise.all([
     callQuiet("list_discovered"),
     callQuiet("list_peers"),
-    callQuiet("list_transfers"),
   ]);
   if (discovery) state.devices.discovery = discovery;
   if (Array.isArray(peers)) state.devices.peers = peers;
-  if (Array.isArray(transfers)) mergeTransfers(transfers);
 
   renderDiscovered();
   renderPeers();
-  renderTransfers();
   renderDiscoveryNotice();
-  // The switch reads its own flag, but the text under it describes what is
-  // actually happening — which this tick is what just refreshed.
-  renderVisibility();
+  renderPresence();
 }
 
-/// Runs on every page, forever. These two are requests from another human
-/// waiting on an answer; missing one because you were on Settings is the
-/// failure mode.
+/// Runs on every page, forever. A pairing request is another human waiting on
+/// an answer; missing one because you were on Settings is the failure mode.
 function startWatchTick() {
   setInterval(async () => {
-    const [requests, offers] = await Promise.all([
-      callQuiet("list_incoming_pair_requests"),
-      callQuiet("list_incoming_offers"),
-    ]);
+    const requests = await callQuiet("list_incoming_pair_requests");
     if (Array.isArray(requests)) showIncomingPair(requests);
-    if (Array.isArray(offers)) showIncomingOffer(offers);
-    updateDevicesBadge(
-      (Array.isArray(requests) ? requests.length : 0) +
-        (Array.isArray(offers) ? offers.length : 0)
-    );
+    updateDevicesBadge(Array.isArray(requests) ? requests.length : 0);
   }, WATCH_TICK_MS);
 }
 
@@ -1648,104 +1570,27 @@ async function loadIdentity() {
 
   // Do not stomp on the field while it is being edited.
   if (document.activeElement !== $("self-name")) $("self-name").value = identity.name;
-  $("self-receive").textContent = identity.receive_dir || "—";
   $("self-addr").textContent = identity.addresses.length
     ? identity.addresses[0]
     : "no network";
-  renderVisibility();
+  renderPresence();
 }
 
-// --- visible / hidden ------------------------------------------------------
-
-/// The switch says what it will do; the text says what is true right now.
-/// Those differ more often than they look: "visible" with the server stopped
-/// announces nothing, and a UDP bind can fail with the flag still on. Reading
-/// the flag alone would leave the user staring at an on switch and an empty
-/// list on the other machine, with nothing on screen explaining why.
-function renderVisibility() {
-  const self = state.devices.self;
-  const { running, listening, error } = state.devices.discovery;
-  const wanted = !!(self && self.discoverable);
-  const peering = !self || self.peering_enabled !== false;
-  const busy = state.devices.visibilityBusy;
-
-  const toggle = $("visibility-toggle");
-  toggle.classList.toggle("is-on", wanted && peering);
-  toggle.classList.toggle("is-busy", busy);
-  // Nothing to switch when peering is off in the config: the beacon, the
-  // pairing endpoint and the whole Devices flow are disabled together.
-  toggle.disabled = busy || !peering;
-  toggle.setAttribute("aria-pressed", String(wanted && peering));
-
-  // Announcing for real, or merely switched on?
-  const live = wanted && peering && running;
+/// Whether other devices can see this one. Not a control any more -- running
+/// the server IS the consent, so this only reports.
+function renderPresence() {
+  const { running, error } = state.devices.discovery;
   const pill = $("visibility-pill");
-  pill.classList.toggle("pill-live", live);
-  pill.classList.toggle("pill-warn", wanted && peering && !live);
-  pill.classList.toggle("pill-off", !wanted || !peering);
-  $("visibility-pill-text").textContent = live
+  pill.classList.toggle("pill-live", running);
+  pill.classList.toggle("pill-warn", !running && !!error);
+  pill.classList.toggle("pill-off", !running && !error);
+  $("visibility-pill-text").textContent = running
     ? "Visible"
-    : wanted && peering
-      ? "Not announcing"
-      : "Hidden";
-
-  let title;
-  let sub;
-  if (!peering) {
-    title = "Devices are turned off";
-    sub = "Peering is disabled in the config file, so nothing is announced and nobody can pair.";
-  } else if (busy) {
-    title = wanted ? "Visible" : "Hidden";
-    sub = "Applying…";
-  } else if (!wanted) {
-    title = "Hidden";
-    sub = listening
-      ? "This device is not announcing itself. It still sees others, and devices you have already paired with can still reach it."
-      : "This device is not announcing itself. Devices you have already paired with can still reach it.";
-  } else if (error) {
-    title = "Visible";
-    sub = "Discovery could not start — see the note below. You can still be added by address.";
-  } else if (!state.server.running) {
-    title = "Visible";
-    sub = "Nothing is announced until the server is running — switch it on from the Dashboard.";
-  } else {
-    title = "Visible";
-    sub = "Anyone running LAN Share on this network can see this device and ask to pair.";
-  }
-  $("visibility-title").textContent = title;
-  $("visibility-sub").textContent = sub;
-}
-
-async function toggleVisibility() {
-  if (state.devices.visibilityBusy) return;
-  const next = !(state.devices.self && state.devices.self.discoverable);
-
-  state.devices.visibilityBusy = true;
-  // Optimistic, so the switch moves under the finger rather than a tick later.
-  // loadIdentity below replaces it with what the backend actually stored.
-  if (state.devices.self) state.devices.self.discoverable = next;
-  renderVisibility();
-
-  try {
-    const restarted = await call("set_discoverable", { enabled: next });
-    // Keep the config snapshot honest. Settings posts the whole object back on
-    // its next save, so a stale flag here would quietly undo this switch.
-    if (state.config) state.config.discoverable = next;
-    addLog(next ? "Now visible to other devices" : "Now hidden from other devices");
-    if (restarted) {
-      showToast("Server restarted to start announcing", "info");
-      state.qrCache = {};
-      await refreshServerStatus();
-    } else {
-      showToast(next ? "Visible to other devices" : "Hidden from other devices");
-    }
-  } catch (_err) {
-    /* already reported by call() */
-  } finally {
-    state.devices.visibilityBusy = false;
-    await loadIdentity();
-    await refreshDevices();
-  }
+    : error
+      ? "Discovery failed"
+      : state.server.running
+        ? "Not announcing"
+        : "Server stopped";
 }
 
 // --- discovered ------------------------------------------------------------
@@ -1911,12 +1756,8 @@ function peerRowHtml(p) {
                data-tip="Forget this device entirely. You would both have to pair again from scratch.">
          <span class="material-symbols-outlined">link_off</span>
        </button>`
-    : `<button class="primary-button" type="button" data-dev="send" data-id="${id}" ${p.online ? "" : "disabled"}
-               data-tip="Pick files and send them straight to this device. It gets a prompt first, unless Always accept is on.">
-         <span class="material-symbols-outlined">send</span><span>Send</span>
-       </button>
-       <button class="ghost-button" type="button" data-dev="browse" data-id="${id}" ${p.online ? "" : "disabled"}
-               data-tip="Look through what that device shares and pull files from it, without touching its keyboard.">
+    : `<button class="primary-button" type="button" data-dev="browse" data-id="${id}" ${p.online ? "" : "disabled"}
+               data-tip="Open this device on the Network page: browse what it shares, preview it, and pull down what you want.">
          <span class="material-symbols-outlined">folder_open</span><span>Browse</span>
        </button>
        <button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
@@ -1936,9 +1777,7 @@ function peerRowHtml(p) {
     <div class="device-row ${p.online ? "is-online" : ""} ${p.blocked ? "is-blocked" : ""}">
       <span class="device-icon"><span class="material-symbols-outlined">${deviceIcon(p.platform)}</span></span>
       <span class="device-body">
-        <span class="device-name">${escapeHtml(p.name)}
-          ${p.auto_accept && !p.blocked ? '<span class="badge badge-auto" data-tip="Files from this device are saved without asking you first.">Auto</span>' : ""}
-        </span>
+        <span class="device-name">${escapeHtml(p.name)}</span>
         <span class="device-sub">
           ${status}
           <span class="mono">${escapeHtml(p.address || "")}</span>
@@ -1958,109 +1797,6 @@ function peerRowHtml(p) {
 }
 
 // --- transfers -------------------------------------------------------------
-
-/// Merge rather than replace, so the sampled rate survives a refresh.
-function mergeTransfers(rows) {
-  const now = Date.now();
-  for (const row of rows) {
-    const previous = state.transfers.items.find((t) => t.id === row.id);
-    if (previous && row.bytes > previous.bytes) {
-      const seconds = (now - (state.transfers.rates[row.id]?.at || now)) / 1000;
-      if (seconds > 0.4) {
-        state.transfers.rates[row.id] = {
-          at: now,
-          bps: (row.bytes - previous.bytes) / seconds,
-        };
-      }
-    } else if (!state.transfers.rates[row.id]) {
-      state.transfers.rates[row.id] = { at: now, bps: 0 };
-    }
-  }
-  state.transfers.items = rows;
-}
-
-function renderTransfers() {
-  const host = $("transfers-list");
-  const rows = state.transfers.items;
-  $("transfers-count").textContent = rows.length;
-
-  if (!rows.length) {
-    host.innerHTML = `
-      <div class="device-empty">
-        <span class="material-symbols-outlined">swap_vert</span>
-        <span class="device-empty-title">No transfers yet</span>
-      </div>`;
-    return;
-  }
-  host.innerHTML = rows.map(transferRowHtml).join("");
-}
-
-function transferRowHtml(t) {
-  const out = t.direction === "out";
-  const filePct = t.file_total_bytes
-    ? Math.min(100, Math.round((t.file_bytes / t.file_total_bytes) * 100))
-    : 0;
-  const totalPct = t.total_bytes
-    ? Math.min(100, Math.round((t.bytes / t.total_bytes) * 100))
-    : 0;
-
-  let meta;
-  if (t.status === "active") {
-    const bps = state.transfers.rates[t.id]?.bps || 0;
-    meta = [
-      formatBytes(t.bytes) + " of " + formatBytes(t.total_bytes),
-      formatRate(bps),
-      formatEta(t.total_bytes - t.bytes, bps),
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  } else if (t.status === "failed") {
-    // Name the device, not the socket: "connection reset by peer" is not
-    // something a person can act on.
-    meta = `<span class="transfer-bad">${escapeHtml(t.error || "Failed")}</span>`;
-  } else if (t.status === "cancelled") {
-    meta = "Cancelled";
-  } else if (t.status === "declined") {
-    meta = "Declined";
-  } else {
-    meta = formatBytes(t.bytes) + " · done";
-  }
-
-  const canCancel = t.status === "active";
-
-  return `
-    <div class="transfer-row is-${escapeHtml(t.status)}">
-      <span class="transfer-dir ${out ? "is-out" : "is-in"}"
-            data-tip="${out ? "Leaving this computer." : "Arriving from the other device, into your receive folder."}">
-        <span class="material-symbols-outlined">${out ? "north_east" : "south_west"}</span>
-      </span>
-      <span class="transfer-main">
-        <span class="transfer-head">
-          <span class="transfer-peer">${escapeHtml(t.peer_name)}</span>
-          <span class="transfer-file">${escapeHtml(t.file_name || "")}</span>
-          <span class="spacer"></span>
-          <span class="transfer-idx">${t.file_count > 1 ? `${t.file_index + 1}/${t.file_count}` : ""}</span>
-        </span>
-        <span class="progress-track transfer-track-file" role="progressbar" data-tip="Progress through the file named above."
-              aria-label="Current file" aria-valuenow="${filePct}" aria-valuemin="0" aria-valuemax="100">
-          <span class="progress-bar" style="width:${filePct}%"></span>
-        </span>
-        <span class="progress-track transfer-track-total" role="progressbar" data-tip="Progress through the whole batch."
-              aria-label="All files" aria-valuenow="${totalPct}" aria-valuemin="0" aria-valuemax="100">
-          <span class="progress-bar" style="width:${totalPct}%"></span>
-        </span>
-        <span class="transfer-meta">${meta}</span>
-      </span>
-      <span class="device-actions">
-        ${canCancel
-          ? `<button class="icon-button" type="button" data-dev="cancel-transfer" data-id="${t.id}" aria-label="Cancel"
-                     data-tip="Stop this transfer now. A half-written file is deleted rather than left behind.">
-               <span class="material-symbols-outlined">close</span>
-             </button>`
-          : ""}
-      </span>
-    </div>`;
-}
 
 // --- outgoing pairing ------------------------------------------------------
 
@@ -2196,181 +1932,9 @@ async function answerIncomingPair(accept) {
 
 // --- incoming offers -------------------------------------------------------
 
-function showIncomingOffer(offers) {
-  const backdrop = $("offer-backdrop");
-  state.offers.items = offers;
-  if (!offers.length) {
-    if (state.offers.shownId) {
-      backdrop.classList.add("hidden");
-      state.offers.shownId = null;
-    }
-    return;
-  }
-  const offer = offers[0];
-  if (state.offers.shownId === offer.offer_id) return;
-  state.offers.shownId = offer.offer_id;
-
-  $("offer-peer").textContent = offer.peer_name;
-  $("offer-summary-text").textContent =
-    offer.file_count + (offer.file_count === 1 ? " file" : " files") +
-    " · " + offer.total_bytes_text;
-  $("offer-dest").textContent = state.devices.self ? state.devices.self.receive_dir : "";
-  $("offer-always").checked = false;
-
-  const preview = offer.files.slice(0, 8);
-  $("offer-files").innerHTML =
-    preview
-      .map(
-        (f) => `<li class="offer-file">
-          <span class="offer-file-name">${escapeHtml(f.name)}</span>
-          <span class="offer-file-size">${formatBytes(f.size)}</span>
-        </li>`
-      )
-      .join("") +
-    (offer.file_count > preview.length
-      ? `<li class="offer-file offer-file-more">and ${offer.file_count - preview.length} more</li>`
-      : "");
-
-  backdrop.classList.remove("hidden");
-  $("offer-decline").focus();
-}
-
-async function answerOffer(accept) {
-  const offerId = state.offers.shownId;
-  if (!offerId) return;
-  $("offer-backdrop").classList.add("hidden");
-  state.offers.shownId = null;
-  try {
-    if (accept) {
-      await call("accept_offer", {
-        offerId,
-        alwaysAccept: $("offer-always").checked,
-      });
-    } else {
-      await call("decline_offer", { offerId });
-    }
-  } catch (_err) {
-    /* already reported */
-  }
-  refreshDevices();
-}
-
 // --- sending ---------------------------------------------------------------
 
-async function sendToDevice(deviceId) {
-  const paths = await callQuiet("pick_files");
-  if (!paths || !paths.length) return;
-  try {
-    const handle = await call("start_send_files_task", { deviceId, paths });
-    addLog("Sending " + formatCount(paths.length, "file"));
-    // The transfers panel is the progress UI; the task is polled only so a
-    // failure surfaces as a toast rather than silently.
-    pollSendTask(handle.id);
-  } catch (_err) {
-    /* already reported */
-  }
-}
-
-async function pollSendTask(taskId) {
-  try {
-    while (true) {
-      await sleep(TASK_POLL_MS);
-      const payload = await callQuiet("get_task_progress", { taskId });
-      if (!payload) return;
-      refreshDevices();
-      if (payload.error) {
-        showToast(payload.error, "error");
-        return;
-      }
-      if (payload.done) {
-        showToast(payload.message || "Sent", "success");
-        return;
-      }
-    }
-  } finally {
-    await callQuiet("clear_task", { taskId });
-  }
-}
-
 // --- browse ----------------------------------------------------------------
-
-async function openBrowse(deviceId) {
-  const peer = state.devices.peers.find((p) => p.device_id === deviceId);
-  state.browse = {
-    peerId: deviceId,
-    peerName: peer ? peer.name : "device",
-    shareId: null,
-    path: "",
-  };
-  $("browse-peer").textContent = state.browse.peerName;
-  $("browse-backdrop").classList.remove("hidden");
-  await loadBrowse();
-}
-
-async function loadBrowse() {
-  const { peerId, shareId, path } = state.browse;
-  const host = $("browse-list");
-  host.innerHTML = '<div class="device-empty"><span class="device-empty-title">Loading…</span></div>';
-  $("browse-path").textContent = shareId ? "/" + path : "Shared folders";
-  $("browse-up").disabled = !shareId;
-
-  let data;
-  try {
-    data = await call("peer_browse", { deviceId: peerId, shareId, path });
-  } catch (_err) {
-    host.innerHTML = '<div class="device-empty"><span class="device-empty-title">Could not reach that device</span></div>';
-    return;
-  }
-
-  // Share list, or a directory listing — the shapes differ.
-  const rows = shareId ? data.entries || [] : data || [];
-  if (!rows.length) {
-    host.innerHTML = '<div class="device-empty"><span class="device-empty-title">Nothing here</span></div>';
-    return;
-  }
-
-  host.innerHTML = rows
-    .map((row) => {
-      const isDir = shareId ? row.is_dir : true;
-      const name = shareId ? row.name : row.name;
-      const target = shareId ? row.name : row.id;
-      // Their file, your player. The other machine mints a link; nothing is
-      // downloaded here first.
-      const play =
-        !isDir && isPlayableFile(name)
-          ? `<button class="icon-button" type="button" data-browse="play" data-target="${escapeHtml(name)}"
-                     aria-label="Play ${escapeHtml(name)}"
-                     data-tip="Play this from that device, in your media player. It streams over the network — nothing is copied here.">
-               <span class="material-symbols-outlined">play_circle</span>
-             </button>`
-          : "<span></span>";
-      return `
-      <div class="browse-row ${isDir ? "is-dir" : ""}" data-browse="${isDir ? "open" : "file"}"
-           data-target="${escapeHtml(target)}">
-        <span class="material-symbols-outlined browse-icon">${isDir ? "folder" : "draft"}</span>
-        <span class="browse-name">${escapeHtml(name)}</span>
-        <span class="browse-size">${shareId && !row.is_dir ? escapeHtml(row.size_text) : ""}</span>
-        ${play}
-      </div>`;
-    })
-    .join("");
-}
-
-/// Play a file that lives on the device being browsed.
-///
-/// The path is built here from where the dialog currently is, so it is the same
-/// path the listing came from — and their end resolves it again anyway.
-async function playPeerFile(name) {
-  const { peerId, shareId, path } = state.browse;
-  if (!peerId || !shareId) return;
-  const rel = path ? path + "/" + name : name;
-  try {
-    await call("play_peer_file", { deviceId: peerId, shareId, path: rel });
-    showToast("Opening " + name + " in your player", "success");
-  } catch (_err) {
-    /* already reported */
-  }
-}
 
 // --- delegated actions -----------------------------------------------------
 
@@ -2384,30 +1948,15 @@ async function onDeviceAction(event) {
   switch (action) {
     case "pair":
       return startPairing(id);
-    case "send":
-      return sendToDevice(id);
     case "browse":
-      return openBrowse(id);
-    case "auto": {
-      if (!peer) return;
-      // Asked only when turning it ON, because that removes a prompt. Turning
-      // it off restores one and needs no confirmation.
-      if (!peer.auto_accept) {
-        const ok = await confirmDialog(
-          "Always accept files from " + peer.name + "?",
-          "Files from this device will be saved without asking you first.",
-          "Always accept"
-        );
-        if (!ok) return;
-      }
-      await callQuiet("set_peer_auto_accept", { deviceId: id, enabled: !peer.auto_accept });
-      return refreshDevices();
-    }
+      // Browsing is a page, not a dialog: go there with this device chosen.
+      state.network.deviceId = id;
+      return switchPage("network");
     case "block": {
       if (!peer) return;
       const ok = await confirmDialog(
         "Block " + peer.name + "?",
-        "It stays in your list so you can unblock it later, but it will not be able to send you files or browse your shares.",
+        "It stays in your list so you can unblock it later, but it will not be able to browse your shares.",
         "Block"
       );
       if (!ok) return;
@@ -2443,95 +1992,9 @@ async function onDeviceAction(event) {
 
 // --- wiring ----------------------------------------------------------------
 
-// --- send to phone ---------------------------------------------------------
-
-/// A handoff link is short-lived, so how long is left is the useful fact — the
-/// file count is already in the label.
-function relativeExpiry(ms) {
-  const left = Number(ms) - Date.now();
-  if (left <= 0) return "expired";
-  if (left < 60_000) return "expires in under a minute";
-  return "expires in " + Math.round(left / 60_000) + "m";
-}
-
-async function createHandoff() {
-  const paths = await callQuiet("pick_files");
-  if (!paths || !paths.length) return;
-  try {
-    const handoff = await call("create_handoff", { paths, minutes: 60 });
-    showHandoff(handoff);
-    loadHandoffs();
-  } catch (_err) {
-    /* already reported */
-  }
-}
-
-function showHandoff(handoff) {
-  $("handoff-qr").innerHTML = handoff.svg;
-  $("handoff-url").textContent = handoff.url;
-  $("handoff-meta").textContent =
-    formatCount(handoff.file_count, "file") + " · link expires in about an hour";
-  $("handoff-backdrop").dataset.url = handoff.url;
-  $("handoff-backdrop").classList.remove("hidden");
-}
-
-async function loadHandoffs() {
-  const items = await callQuiet("list_handoffs");
-  const host = $("handoff-list");
-  if (!Array.isArray(items) || !items.length) {
-    host.innerHTML = "";
-    return;
-  }
-  host.innerHTML = items
-    .map(
-      (h) => `
-      <div class="handoff-row">
-        <span class="material-symbols-outlined">link</span>
-        <span class="handoff-label">${escapeHtml(h.label)}</span>
-        <span class="text-dim" data-tip="When this link stops working. It expires on its own — you do not have to remember to revoke it.">${relativeExpiry(h.expires_ms)}</span>
-        <span class="spacer"></span>
-        <button class="icon-button" type="button" data-handoff="qr" data-id="${escapeHtml(h.id)}" aria-label="Show code"
-                data-tip="Show the QR code and link again, to scan it from another phone.">
-          <span class="material-symbols-outlined">qr_code_2</span>
-        </button>
-        <button class="icon-button" type="button" data-handoff="revoke" data-id="${escapeHtml(h.id)}" aria-label="Stop sharing"
-                data-tip="Kill this link now, before it expires. The files themselves are untouched.">
-          <span class="material-symbols-outlined">close</span>
-        </button>
-      </div>`
-    )
-    .join("");
-}
-
-function wireHandoff() {
-  $("handoff-pick").addEventListener("click", createHandoff);
-  $("handoff-done").addEventListener("click", () =>
-    $("handoff-backdrop").classList.add("hidden")
-  );
-  $("handoff-copy").addEventListener("click", () =>
-    copyText($("handoff-backdrop").dataset.url, "Link")
-  );
-  $("handoff-list").addEventListener("click", async (event) => {
-    const button = event.target.closest("[data-handoff]");
-    if (!button) return;
-    if (button.dataset.handoff === "revoke") {
-      await callQuiet("revoke_handoff", { id: button.dataset.id });
-      return loadHandoffs();
-    }
-    // Regenerate the QR on demand rather than holding one per link in memory.
-    const items = await callQuiet("list_handoffs");
-    const found = (items || []).find((h) => h.id === button.dataset.id);
-    if (!found) return loadHandoffs();
-    const svg = await callQuiet("get_qr_for_url", { url: found.url, size: 320 });
-    showHandoff({ ...found, svg: svg || "" });
-  });
-}
-
 function wireDevices() {
-  wireHandoff();
   $("nearby-list").addEventListener("click", onDeviceAction);
   $("paired-list").addEventListener("click", onDeviceAction);
-  $("transfers-list").addEventListener("click", onDeviceAction);
 
   $("self-name-save").addEventListener("click", async () => {
     const name = $("self-name").value.trim();
@@ -2545,29 +2008,10 @@ function wireDevices() {
     }
   });
 
-  $("visibility-toggle").addEventListener("click", toggleVisibility);
-
-  $("self-receive-pick").addEventListener("click", async () => {
-    const picked = await callQuiet("pick_receive_folder");
-    if (picked) {
-      showToast("Received files will go to " + picked, "success");
-      loadIdentity();
-    }
-  });
-
-  $("transfers-clear").addEventListener("click", () => {
-    state.transfers.items = state.transfers.items.filter((t) => t.status === "active");
-    renderTransfers();
-  });
-
   // --- pairing dialogs ---
   $("pair-out-cancel").addEventListener("click", cancelPairing);
   $("pair-in-accept").addEventListener("click", () => answerIncomingPair(true));
   $("pair-in-reject").addEventListener("click", () => answerIncomingPair(false));
-
-  // --- offers ---
-  $("offer-accept").addEventListener("click", () => answerOffer(true));
-  $("offer-decline").addEventListener("click", () => answerOffer(false));
 
   // --- add by address ---
   $("add-ip-btn").addEventListener("click", () => {
@@ -2592,35 +2036,6 @@ function wireDevices() {
     }
   });
 
-  // --- browse ---
-  $("browse-close").addEventListener("click", () => $("browse-backdrop").classList.add("hidden"));
-  $("browse-up").addEventListener("click", () => {
-    if (state.browse.path) {
-      const idx = state.browse.path.lastIndexOf("/");
-      state.browse.path = idx < 0 ? "" : state.browse.path.slice(0, idx);
-    } else {
-      state.browse.shareId = null;
-    }
-    loadBrowse();
-  });
-  $("browse-list").addEventListener("click", (event) => {
-    const row = event.target.closest("[data-browse]");
-    if (!row) return;
-    // The Play button sits inside the row and carries its own data-browse, so
-    // `closest` finds it first and the folder-open path below is not reached.
-    if (row.dataset.browse === "play") return playPeerFile(row.dataset.target);
-    if (row.dataset.browse !== "open") return;
-    if (!state.browse.shareId) {
-      state.browse.shareId = row.dataset.target;
-      state.browse.path = "";
-    } else {
-      state.browse.path = state.browse.path
-        ? state.browse.path + "/" + row.dataset.target
-        : row.dataset.target;
-    }
-    loadBrowse();
-  });
-
   // Escape on an incoming request SNOOZES rather than answering: the request
   // stays pending and re-opens from the Devices page. Answering on Escape
   // would make a stray keypress a security decision.
@@ -2630,21 +2045,680 @@ function wireDevices() {
       $("pair-in-backdrop").classList.add("hidden");
       state.pairing.shownPairId = null;
     }
-    if (!$("offer-backdrop").classList.contains("hidden")) {
-      $("offer-backdrop").classList.add("hidden");
-      state.offers.shownId = null;
+    if (!$("net-viewer").classList.contains("hidden")) {
+      closeNetViewer();
+      return;
     }
     if (!$("addip-backdrop").classList.contains("hidden")) {
       $("addip-backdrop").classList.add("hidden");
-    }
-    if (!$("browse-backdrop").classList.contains("hidden")) {
-      $("browse-backdrop").classList.add("hidden");
     }
   });
 }
 
 // ============================================================
-// 19  Tooltips
+// 19  Network — what other devices share
+// ============================================================
+//
+// The mirror of the Shares page: that one is what you hand out, this one is
+// what you can reach. Everything here reads; nothing on either side can push.
+//
+// Three things the desktop webview cannot do directly, and how each is solved:
+//   - thumbnails need a bearer token an <img> cannot send, so `peer_thumb`
+//     proxies them through Rust as data URLs, lazily, as tiles scroll in;
+//   - full-size media would be absurd as base64, so `peer_media_url` mints a
+//     play link on the far device and the tag points at a real URL, which is
+//     what makes video seek;
+//   - downloads run as background tasks and report through the same progress
+//     machinery share indexing uses.
+
+const NET_DOWNLOAD_POLL_MS = 400;
+
+state.network = {
+  deviceId: "",
+  // null means "show that device's list of shares".
+  shareId: null,
+  shareName: "",
+  path: "",
+  entries: [],
+  filter: "",
+  mode: "grid",
+  // Names ticked in the CURRENT folder. Cleared on navigation, because a
+  // selection you cannot see is a selection you will download by accident.
+  selected: new Set(),
+  loading: false,
+  error: "",
+  downloads: [],
+  viewerIndex: -1,
+};
+
+async function enterNetwork() {
+  const peers = await callQuiet("list_peers");
+  if (Array.isArray(peers)) state.devices.peers = peers;
+  renderNetDevices();
+
+  const usable = netUsableDevices();
+  if (!usable.some((p) => p.device_id === state.network.deviceId)) {
+    state.network.deviceId = usable.length ? usable[0].device_id : "";
+    state.network.shareId = null;
+    state.network.path = "";
+  }
+  $("net-device").value = state.network.deviceId;
+  loadNetListing();
+}
+
+function netUsableDevices() {
+  return state.devices.peers.filter((p) => !p.blocked);
+}
+
+function renderNetDevices() {
+  const select = $("net-device");
+  const usable = netUsableDevices();
+  select.innerHTML = usable.length
+    ? usable
+        .map(
+          (p) =>
+            '<option value="' + escapeHtml(p.device_id) + '">' +
+            escapeHtml(p.name) + (p.online ? "" : " (offline)") + "</option>"
+        )
+        .join("")
+    : '<option value="">No paired devices</option>';
+  select.disabled = !usable.length;
+}
+
+function netCrumbs() {
+  const device = state.devices.peers.find((p) => p.device_id === state.network.deviceId);
+  const parts = [device ? device.name : "—"];
+  if (state.network.shareId) parts.push(state.network.shareName);
+  if (state.network.path) parts.push(...state.network.path.split("/"));
+  return parts.join(" › ");
+}
+
+async function loadNetListing() {
+  const net = state.network;
+  $("net-crumbs").textContent = netCrumbs();
+  $("net-up").disabled = !net.shareId;
+
+  if (!net.deviceId) {
+    net.entries = [];
+    net.error = "";
+    renderNetwork();
+    return;
+  }
+
+  net.loading = true;
+  net.error = "";
+  renderNetwork();
+
+  let data;
+  try {
+    data = await call("peer_browse", {
+      deviceId: net.deviceId,
+      shareId: net.shareId,
+      path: net.path,
+    });
+  } catch (err) {
+    net.loading = false;
+    net.entries = [];
+    net.error = String(err.message || err);
+    renderNetwork();
+    return;
+  }
+
+  // Two shapes behind one call: a list of shares, or a folder listing.
+  // Normalised here so everything downstream renders one kind of row.
+  net.entries = net.shareId
+    ? (data.entries || []).map((e) => ({
+        name: e.name,
+        isDir: e.is_dir,
+        size: e.size,
+        sizeText: e.size_text,
+        kind: e.kind,
+        ext: e.ext,
+        thumb: !!e.thumb_url,
+        playable: e.playable,
+      }))
+    : (data || []).map((share) => ({
+        name: share.name,
+        isDir: true,
+        isShare: true,
+        shareId: share.id,
+        size: 0,
+        sizeText: "",
+        kind: "dir",
+        ext: "",
+        thumb: false,
+        playable: false,
+      }));
+
+  net.loading = false;
+  net.selected.clear();
+  renderNetwork();
+}
+
+function netVisibleEntries() {
+  const filter = state.network.filter.trim().toLowerCase();
+  const rows = filter
+    ? state.network.entries.filter((e) => e.name.toLowerCase().includes(filter))
+    : state.network.entries;
+  // Folders first, then by name — the order that makes a mixed folder
+  // navigable, and the one the receiver already uses.
+  return [...rows].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+function netIcon(entry) {
+  if (entry.isDir) return entry.isShare ? "folder_shared" : "folder";
+  switch (entry.kind) {
+    case "image":
+      return "image";
+    case "video":
+      return "movie";
+    case "audio":
+      return "music_note";
+    case "pdf":
+      return "picture_as_pdf";
+    case "archive":
+      return "folder_zip";
+    case "text":
+      return "description";
+    default:
+      return "draft";
+  }
+}
+
+function renderNetwork() {
+  const host = $("net-body");
+  const net = state.network;
+
+  if (!netUsableDevices().length) {
+    host.innerHTML = netEmpty(
+      "devices",
+      "No paired devices yet",
+      "Pair a computer on the Devices page and whatever it shares will show up here."
+    );
+    return renderNetSelection();
+  }
+  if (net.loading) {
+    host.innerHTML = netEmpty("hourglass_top", "Loading…", "");
+    return renderNetSelection();
+  }
+  if (net.error) {
+    host.innerHTML = netEmpty("wifi_off", "Could not reach that device", escapeHtml(net.error));
+    return renderNetSelection();
+  }
+
+  const rows = netVisibleEntries();
+  $("net-count").textContent = rows.length;
+
+  if (!rows.length) {
+    host.innerHTML = net.filter
+      ? netEmpty("search_off", "Nothing matches that filter", "")
+      : netEmpty(
+          "folder_open",
+          net.shareId ? "This folder is empty" : "That device shares nothing yet",
+          ""
+        );
+    return renderNetSelection();
+  }
+
+  host.innerHTML =
+    net.mode === "grid"
+      ? '<div class="net-grid">' + rows.map(netTileHtml).join("") + "</div>"
+      : '<div class="net-list">' + rows.map(netRowHtml).join("") + "</div>";
+
+  renderNetSelection();
+  hydrateNetThumbs();
+}
+
+function netEmpty(icon, title, body) {
+  return `
+    <div class="net-empty">
+      <span class="material-symbols-outlined">${icon}</span>
+      <span class="net-empty-title">${escapeHtml(title)}</span>
+      ${body ? '<span class="net-empty-body">' + body + "</span>" : ""}
+    </div>`;
+}
+
+function netCheckHtml(entry) {
+  // A share is a whole folder tree on another machine; downloading one by
+  // ticking a box is not a thing anyone means to do, so shares are not
+  // selectable — open one and pick from inside it.
+  if (entry.isShare) return "<span></span>";
+  return `<span class="net-check" data-net="tick" data-name="${escapeHtml(entry.name)}">
+            <span class="material-symbols-outlined">check</span>
+          </span>`;
+}
+
+function netTileHtml(entry) {
+  const selected = state.network.selected.has(entry.name);
+  const thumb = entry.thumb
+    ? `<span class="net-thumb" data-thumb="${escapeHtml(entry.name)}">
+         <span class="material-symbols-outlined">image</span>
+       </span>`
+    : `<span class="net-thumb"><span class="material-symbols-outlined">${netIcon(entry)}</span></span>`;
+
+  return `
+    <div class="net-tile ${selected ? "is-selected" : ""}" data-net="open" data-name="${escapeHtml(entry.name)}">
+      ${netCheckHtml(entry)}
+      ${entry.playable ? '<span class="net-badge">play</span>' : ""}
+      ${thumb}
+      <span class="net-tile-name">${escapeHtml(entry.name)}</span>
+      <span class="net-tile-sub">${escapeHtml(entry.isDir ? "Folder" : entry.sizeText || "")}</span>
+    </div>`;
+}
+
+function netRowHtml(entry) {
+  const selected = state.network.selected.has(entry.name);
+  const download = entry.isDir
+    ? ""
+    : `<button class="icon-button" type="button" data-net="download-one" data-name="${escapeHtml(entry.name)}"
+               aria-label="Download ${escapeHtml(entry.name)}" data-tip="Save this to your Downloads folder.">
+         <span class="material-symbols-outlined">download</span>
+       </button>`;
+
+  return `
+    <div class="net-row ${selected ? "is-selected" : ""}" data-net="open" data-name="${escapeHtml(entry.name)}">
+      ${netCheckHtml(entry)}
+      <span class="net-row-icon material-symbols-outlined">${netIcon(entry)}</span>
+      <span class="net-row-name">${escapeHtml(entry.name)}</span>
+      <span class="net-row-size">${escapeHtml(entry.isDir ? "" : entry.sizeText || "")}</span>
+      <span class="net-row-actions">${download}</span>
+    </div>`;
+}
+
+/// Fetch thumbnails only for tiles actually on screen.
+///
+/// A folder of 2,000 photos would otherwise be 2,000 round trips to the other
+/// machine before the first one appears.
+let netThumbObserver = null;
+
+function hydrateNetThumbs() {
+  if (netThumbObserver) netThumbObserver.disconnect();
+  const targets = document.querySelectorAll("[data-thumb]");
+  if (!targets.length) return;
+
+  // Captured now: by the time a request lands the user may have navigated, and
+  // a thumbnail from the previous folder must not be painted into this one.
+  const net = state.network;
+  const forDevice = net.deviceId;
+  const forShare = net.shareId;
+  const forPath = net.path;
+
+  netThumbObserver = new IntersectionObserver(
+    (items) => {
+      for (const item of items) {
+        if (!item.isIntersecting) continue;
+        const host = item.target;
+        netThumbObserver.unobserve(host);
+        const name = host.dataset.thumb;
+        const path = forPath ? forPath + "/" + name : name;
+        callQuiet("peer_thumb", { deviceId: forDevice, shareId: forShare, path }).then((dataUrl) => {
+          if (!dataUrl || !host.isConnected) return;
+          if (net.deviceId !== forDevice || net.shareId !== forShare || net.path !== forPath) return;
+          host.innerHTML = '<img src="' + dataUrl + '" alt="" />';
+        });
+      }
+    },
+    { rootMargin: "300px 0px" }
+  );
+  targets.forEach((t) => netThumbObserver.observe(t));
+}
+
+// --- selection -------------------------------------------------------------
+
+function renderNetSelection() {
+  const net = state.network;
+  const count = net.selected.size;
+  $("net-selection").classList.toggle("hidden", count === 0);
+  $("net-selected-text").textContent = formatCount(count, "item") + " selected";
+  const selectable = netVisibleEntries().filter((e) => !e.isShare);
+  $("net-select-all").checked = count > 0 && count === selectable.length;
+}
+
+function toggleNetSelection(name) {
+  const net = state.network;
+  if (net.selected.has(name)) net.selected.delete(name);
+  else net.selected.add(name);
+  renderNetwork();
+}
+
+// --- navigation ------------------------------------------------------------
+
+function netOpen(name) {
+  const net = state.network;
+  const entry = net.entries.find((e) => e.name === name);
+  if (!entry) return;
+
+  if (entry.isShare) {
+    net.shareId = entry.shareId;
+    net.shareName = entry.name;
+    net.path = "";
+    return loadNetListing();
+  }
+  if (entry.isDir) {
+    net.path = net.path ? net.path + "/" + entry.name : entry.name;
+    return loadNetListing();
+  }
+
+  // A file. Preview what can be previewed; anything else, the click means
+  // "I want this", so fetch it.
+  if (entry.kind === "image" || entry.kind === "video" || entry.kind === "audio") {
+    const index = netViewable().findIndex((e) => e.name === name);
+    if (index >= 0) return openNetViewer(index);
+  }
+  startNetDownload([entry], false);
+}
+
+function netUp() {
+  const net = state.network;
+  if (net.path) {
+    const idx = net.path.lastIndexOf("/");
+    net.path = idx < 0 ? "" : net.path.slice(0, idx);
+  } else {
+    net.shareId = null;
+    net.shareName = "";
+  }
+  loadNetListing();
+}
+
+// --- downloads -------------------------------------------------------------
+
+function netEntryPath(entry) {
+  return state.network.path ? state.network.path + "/" + entry.name : entry.name;
+}
+
+async function startNetDownload(entries, zip) {
+  const net = state.network;
+  if (!entries.length || !net.shareId) return;
+
+  const items = entries.map((e) => ({
+    path: netEntryPath(e),
+    name: e.name,
+    is_dir: !!e.isDir,
+    size: e.size || 0,
+  }));
+
+  let handle;
+  try {
+    handle = await call("start_peer_download_task", {
+      deviceId: net.deviceId,
+      shareId: net.shareId,
+      items,
+      zip,
+    });
+  } catch (_err) {
+    return; // call() already reported it
+  }
+
+  const label =
+    entries.length === 1
+      ? entries[0].name + (zip ? " (zip)" : "")
+      : formatCount(entries.length, "item") + (zip ? " as .zip" : "");
+
+  net.downloads.unshift({
+    id: handle.id,
+    label,
+    message: "Starting…",
+    progress: 0,
+    done: false,
+    error: null,
+  });
+  renderNetDownloads();
+  pollNetDownload(handle.id);
+}
+
+async function pollNetDownload(taskId) {
+  while (true) {
+    await sleep(NET_DOWNLOAD_POLL_MS);
+    const payload = await callQuiet("get_task_progress", { taskId });
+    const row = state.network.downloads.find((d) => d.id === taskId);
+    if (!row) return; // the user cleared it
+
+    if (!payload) {
+      row.done = true;
+      row.error = "lost contact with the download";
+      renderNetDownloads();
+      return;
+    }
+
+    row.progress = payload.progress || 0;
+    row.message = payload.message || "";
+
+    if (payload.done) {
+      row.done = true;
+      row.error = payload.error || null;
+      if (payload.error) {
+        showToast(payload.error, "error");
+      } else {
+        const where = (payload.download_result && payload.download_result.path) || "";
+        showToast("Saved to " + where, "success");
+        addLog("Downloaded " + row.label + " → " + where);
+      }
+      renderNetDownloads();
+      await callQuiet("clear_task", { taskId });
+      return;
+    }
+    renderNetDownloads();
+  }
+}
+
+function renderNetDownloads() {
+  const rows = state.network.downloads;
+  $("net-downloads-card").classList.toggle("hidden", rows.length === 0);
+  $("net-downloads").innerHTML = rows
+    .map((d) => {
+      const pct = Math.round((d.progress || 0) * 100);
+      const icon = d.error ? "error" : d.done ? "check_circle" : "download";
+      // No declared total on a streamed archive, so the bar goes indeterminate
+      // rather than sitting at zero and looking stuck.
+      const bar = d.done
+        ? ""
+        : `<span class="progress-track">
+             <span class="progress-bar${pct ? "" : " is-indeterminate"}" style="width:${pct}%"></span>
+           </span>`;
+      return `
+      <div class="net-download-row ${d.done ? "is-done" : ""}">
+        <span class="material-symbols-outlined">${icon}</span>
+        <span class="net-download-main">
+          <span class="net-download-name">${escapeHtml(d.label)}</span>
+          ${bar}
+          <span class="net-download-meta">${escapeHtml(d.error || d.message || "")}</span>
+        </span>
+        <span></span>
+      </div>`;
+    })
+    .join("");
+}
+
+// --- preview ---------------------------------------------------------------
+
+function netViewable() {
+  return netVisibleEntries().filter(
+    (e) => !e.isDir && (e.kind === "image" || e.kind === "video" || e.kind === "audio")
+  );
+}
+
+function netViewerEntry() {
+  return netViewable()[state.network.viewerIndex] || null;
+}
+
+async function openNetViewer(index) {
+  const rows = netViewable();
+  if (index < 0 || index >= rows.length) return;
+  const entry = rows[index];
+  const net = state.network;
+  net.viewerIndex = index;
+
+  $("net-viewer").classList.remove("hidden");
+  $("net-viewer-name").textContent = entry.name;
+  $("net-viewer-prev").classList.toggle("hidden", index <= 0);
+  $("net-viewer-next").classList.toggle("hidden", index >= rows.length - 1);
+
+  const stage = $("net-viewer-stage");
+  stage.innerHTML = '<div class="net-viewer-fallback"><span>Loading…</span></div>';
+
+  // .mkv and friends: the file is fine, a browser is the wrong software. Say so
+  // and point at the two things that do work.
+  if (!entry.playable && entry.kind !== "image") {
+    stage.innerHTML = `
+      <div class="net-viewer-fallback">
+        <span>Browsers can't play ${escapeHtml((entry.ext || "").toUpperCase())}</span>
+        <span>Use Open in player, or download it.</span>
+      </div>`;
+    return;
+  }
+
+  let url;
+  try {
+    url = await call("peer_media_url", {
+      deviceId: net.deviceId,
+      shareId: net.shareId,
+      path: netEntryPath(entry),
+    });
+  } catch (_err) {
+    stage.innerHTML = '<div class="net-viewer-fallback"><span>Could not open that file</span></div>';
+    return;
+  }
+  // Stale answer: the user stepped on while this was in flight.
+  if (net.viewerIndex !== index) return;
+
+  if (entry.kind === "image") {
+    stage.innerHTML = `<img src="${escapeHtml(url)}" alt="${escapeHtml(entry.name)}" />`;
+  } else if (entry.kind === "video") {
+    stage.innerHTML = `<video src="${escapeHtml(url)}" controls autoplay preload="metadata"></video>`;
+  } else {
+    stage.innerHTML = `<audio src="${escapeHtml(url)}" controls autoplay preload="metadata"></audio>`;
+  }
+}
+
+function closeNetViewer() {
+  state.network.viewerIndex = -1;
+  $("net-viewer").classList.add("hidden");
+  // Emptying the stage stops playback: a hidden <video> keeps pulling from the
+  // other machine otherwise.
+  $("net-viewer-stage").innerHTML = "";
+}
+
+function stepNetViewer(delta) {
+  const next = state.network.viewerIndex + delta;
+  if (next < 0 || next >= netViewable().length) return;
+  openNetViewer(next);
+}
+
+// --- wiring ----------------------------------------------------------------
+
+function wireNetwork() {
+  $("net-device").addEventListener("change", (event) => {
+    const net = state.network;
+    net.deviceId = event.target.value;
+    net.shareId = null;
+    net.shareName = "";
+    net.path = "";
+    loadNetListing();
+  });
+
+  $("net-up").addEventListener("click", netUp);
+
+  $("net-filter").addEventListener(
+    "input",
+    debounce((event) => {
+      state.network.filter = event.target.value;
+      renderNetwork();
+    }, 140)
+  );
+
+  $("net-view-mode").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-net-mode]");
+    if (!button) return;
+    state.network.mode = button.dataset.netMode;
+    $("net-view-mode")
+      .querySelectorAll(".mode-button")
+      .forEach((b) => b.classList.toggle("active", b === button));
+    renderNetwork();
+  });
+
+  $("net-body").addEventListener("click", (event) => {
+    const target = event.target.closest("[data-net]");
+    if (!target) return;
+    const name = target.dataset.name;
+    switch (target.dataset.net) {
+      case "tick":
+        // The tick sits on top of the tile, which is itself a click target.
+        event.stopPropagation();
+        return toggleNetSelection(name);
+      case "download-one": {
+        event.stopPropagation();
+        const entry = state.network.entries.find((e) => e.name === name);
+        if (entry) startNetDownload([entry], false);
+        return;
+      }
+      case "open":
+        return netOpen(name);
+    }
+  });
+
+  $("net-select-all").addEventListener("change", (event) => {
+    const net = state.network;
+    net.selected.clear();
+    if (event.target.checked) {
+      netVisibleEntries()
+        .filter((e) => !e.isShare)
+        .forEach((e) => net.selected.add(e.name));
+    }
+    renderNetwork();
+  });
+
+  $("net-clear-selection").addEventListener("click", () => {
+    state.network.selected.clear();
+    renderNetwork();
+  });
+
+  const selectedEntries = () =>
+    state.network.entries.filter((e) => state.network.selected.has(e.name));
+  $("net-download").addEventListener("click", () => startNetDownload(selectedEntries(), false));
+  $("net-download-zip").addEventListener("click", () => startNetDownload(selectedEntries(), true));
+
+  $("net-downloads-clear").addEventListener("click", () => {
+    state.network.downloads = state.network.downloads.filter((d) => !d.done);
+    renderNetDownloads();
+  });
+
+  // --- preview ---
+  $("net-viewer-close").addEventListener("click", closeNetViewer);
+  $("net-viewer-prev").addEventListener("click", () => stepNetViewer(-1));
+  $("net-viewer-next").addEventListener("click", () => stepNetViewer(1));
+
+  $("net-viewer-download").addEventListener("click", () => {
+    const entry = netViewerEntry();
+    if (entry) startNetDownload([entry], false);
+  });
+
+  $("net-viewer-play").addEventListener("click", async () => {
+    const entry = netViewerEntry();
+    if (!entry) return;
+    try {
+      await call("play_peer_file", {
+        deviceId: state.network.deviceId,
+        shareId: state.network.shareId,
+        path: netEntryPath(entry),
+      });
+      showToast("Opening " + entry.name + " in your player", "success");
+    } catch (_err) {
+      /* already reported */
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if ($("net-viewer").classList.contains("hidden")) return;
+    if (event.key === "ArrowLeft") stepNetViewer(-1);
+    else if (event.key === "ArrowRight") stepNetViewer(1);
+  });
+}
+
+// ============================================================
+// 20  Tooltips
 // ============================================================
 
 /* Anything wearing `data-tip` explains itself on hover and on keyboard focus.

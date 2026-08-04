@@ -17,7 +17,7 @@ use axum::{
 use crate::{
     discovery, media,
     models::{AppState, ServerCtx, ServerHandle, ServerStatus},
-    peers, routes, transfer,
+    peers, routes,
     utils::{format_bytes, now_ms},
 };
 
@@ -96,19 +96,13 @@ pub(crate) fn build_router(ctx: ServerCtx) -> Router {
         // `hello` and the three pairing routes are unauthenticated by
         // necessity: a device you have not paired with yet has no token. Each
         // is rate-limited and each returns the same 404 body on refusal.
+        // Pairing, and nothing else. A paired device reads over the ordinary
+        // routes below with its bearer token; there is deliberately no way for
+        // one device to push anything at another.
         .route("/api/peer/hello", get(peers::hello))
         .route("/api/peer/pair/request", post(peers::pair_request))
         .route("/api/peer/pair/reveal", post(peers::pair_reveal))
         .route("/api/peer/pair/poll", post(peers::pair_poll))
-        .route("/api/peer/offer", post(peers::offer))
-        .route("/api/peer/offer/{offer_id}", get(peers::offer_status))
-        .route(
-            "/api/peer/file/{offer_id}/{index}",
-            // Same reasoning as /api/upload: the default 2 MiB cap would
-            // reject every real file.
-            axum::routing::put(transfer::receive_file)
-                .layer(DefaultBodyLimit::max(max_upload)),
-        )
         // --- authenticated api ---
         .route("/api/shares", get(routes::list_shares))
         .route("/api/list", get(routes::list_dir))
@@ -188,12 +182,8 @@ pub(crate) fn start_server_impl(app: &tauri::AppHandle, state: &AppState) -> Res
     // a mystery dialog five seconds after the user clicked Start, with nothing
     // on screen to connect it to.
     //
-    // Bound on `peering_enabled` alone, deliberately NOT on `discoverable`.
-    // "Invisible" means other devices cannot see US; it has never meant we go
-    // blind to them, and tying the socket to the flag made it mean both --
-    // plus it made switching visibility back on require a full restart. The
-    // firewall prompt still lands on Start, which is the property that comment
-    // above is protecting.
+    // Bound whenever peering is on, which -- since the server running IS the
+    // consent to be seen -- means whenever the server runs.
     let discovery_socket = if peering {
         match discovery::bind_receiver(discovery_port) {
             Ok(sock) => {
@@ -223,8 +213,6 @@ pub(crate) fn start_server_impl(app: &tauri::AppHandle, state: &AppState) -> Res
         *slot = Some(thumb_dir.clone());
     }
 
-    let receive_dir = crate::peers::resolve_receive_dir(app, state)?;
-
     let device_id = {
         let config = crate::config::load_config_impl(app);
         Arc::new(config.device_id)
@@ -246,15 +234,9 @@ pub(crate) fn start_server_impl(app: &tauri::AppHandle, state: &AppState) -> Res
         discovered: Arc::clone(&state.discovered),
         pending_pairs: Arc::clone(&state.pending_pairs),
         pair_attempts: Arc::clone(&state.pair_attempts),
-        offers: Arc::clone(&state.offers),
-        transfers: Arc::clone(&state.transfers),
-        next_transfer_id: Arc::clone(&state.next_transfer_id),
-        transfer_cancels: Arc::clone(&state.transfer_cancels),
         device_id,
-        receive_dir,
         discovery_self_seen_ms: Arc::clone(&state.discovery_self_seen_ms),
         discovery_started_ms: Arc::clone(&state.discovery_started_ms),
-        discovery_wake: Arc::clone(&state.discovery_wake),
     };
 
     // `watch` rather than `oneshot`: three tasks now share one shutdown signal,

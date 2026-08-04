@@ -50,6 +50,34 @@ struct CentralEntry {
     dos_date: u16,
 }
 
+/// An entry between `begin_file` and `end_file`.
+///
+/// Carries the running CRC and byte count, which is exactly the state a data
+/// descriptor needs and the reason this format can be written forward-only.
+pub(crate) struct OpenEntry {
+    name: String,
+    zip64: bool,
+    offset: u64,
+    dos_time: u16,
+    dos_date: u16,
+    crc: crc32fast::Hasher,
+    written: u64,
+}
+
+impl OpenEntry {
+    /// How much more this entry may hold. A non-Zip64 entry cannot describe
+    /// more than 4 GiB, so it stops there rather than emitting a descriptor
+    /// that silently wraps.
+    fn remaining(&self) -> u64 {
+        let cap = if self.zip64 {
+            u64::MAX
+        } else {
+            U32_SENTINEL as u64
+        };
+        cap.saturating_sub(self.written)
+    }
+}
+
 pub(crate) struct ZipStream<W: Write> {
     out: W,
     offset: u64,
@@ -93,6 +121,37 @@ impl<W: Write> ZipStream<W> {
         mtime_ms: u64,
         reader: &mut R,
     ) -> IoResult<()> {
+        let mut entry = self.begin_file(name, declared_size, mtime_ms)?;
+        // 64 KiB: large enough that the per-write channel handoff is amortised,
+        // small enough that a stalled client is not holding megabytes.
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            let want = entry.remaining().min(buffer.len() as u64) as usize;
+            if want == 0 {
+                break;
+            }
+            let read = reader.read(&mut buffer[..want])?;
+            if read == 0 {
+                break;
+            }
+            self.write_chunk(&mut entry, &buffer[..read])?;
+        }
+        self.end_file(entry)
+    }
+
+    /// Start an entry, for callers that are handed bytes rather than able to
+    /// pull them.
+    ///
+    /// The push shape exists for the peer downloader: its bytes arrive from an
+    /// async HTTP body, and wrapping that in `Read` means bridging two threads
+    /// through a channel for no gain. `write_file` is this, with a pull loop
+    /// around it.
+    pub(crate) fn begin_file(
+        &mut self,
+        name: &str,
+        declared_size: u64,
+        mtime_ms: u64,
+    ) -> IoResult<OpenEntry> {
         let zip64 = declared_size >= ZIP64_THRESHOLD || self.offset >= ZIP64_THRESHOLD;
         let (dos_time, dos_date) = dos_datetime(mtime_ms);
         let offset = self.offset;
@@ -122,36 +181,39 @@ impl<W: Write> ZipStream<W> {
             self.put_u64(0)?;
         }
 
-        // ---- file data ----
-        let mut crc = crc32fast::Hasher::new();
-        let mut written = 0u64;
-        // 64 KiB: large enough that the per-write channel handoff is amortised,
-        // small enough that a stalled client is not holding megabytes.
-        let mut buffer = vec![0u8; 64 * 1024];
-        // A non-Zip64 entry cannot describe more than 4 GiB, so stop there
-        // rather than emit a descriptor that silently wraps.
-        let cap = if zip64 { u64::MAX } else { U32_SENTINEL as u64 };
+        Ok(OpenEntry {
+            name: name.to_string(),
+            zip64,
+            offset,
+            dos_time,
+            dos_date,
+            crc: crc32fast::Hasher::new(),
+            written: 0,
+        })
+    }
 
-        loop {
-            let want = if written >= cap {
-                break;
-            } else {
-                buffer.len().min((cap - written) as usize)
-            };
-            let read = reader.read(&mut buffer[..want])?;
-            if read == 0 {
-                break;
-            }
-            crc.update(&buffer[..read]);
-            self.put(&buffer[..read])?;
-            written += read as u64;
+    /// Append bytes to the entry `begin_file` opened.
+    pub(crate) fn write_chunk(&mut self, entry: &mut OpenEntry, data: &[u8]) -> IoResult<()> {
+        let room = entry.remaining().min(data.len() as u64) as usize;
+        if room == 0 {
+            return Ok(());
         }
-        let crc = crc.finalize();
+        entry.crc.update(&data[..room]);
+        self.put(&data[..room])?;
+        entry.written += room as u64;
+        Ok(())
+    }
+
+    /// Close the entry: data descriptor, then remember it for the central
+    /// directory.
+    pub(crate) fn end_file(&mut self, entry: OpenEntry) -> IoResult<()> {
+        let crc = entry.crc.finalize();
+        let written = entry.written;
 
         // ---- data descriptor ----
         self.put_u32(SIG_DESCRIPTOR)?;
         self.put_u32(crc)?;
-        if zip64 {
+        if entry.zip64 {
             self.put_u64(written)?;
             self.put_u64(written)?;
         } else {
@@ -160,12 +222,12 @@ impl<W: Write> ZipStream<W> {
         }
 
         self.entries.push(CentralEntry {
-            name: name.to_string(),
+            name: entry.name,
             crc,
             size: written,
-            offset,
-            dos_time,
-            dos_date,
+            offset: entry.offset,
+            dos_time: entry.dos_time,
+            dos_date: entry.dos_date,
         });
         Ok(())
     }

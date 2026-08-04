@@ -47,6 +47,34 @@ pub(crate) fn sha256_hex(input: &str) -> String {
     out
 }
 
+/// Standard base64, for `data:` URLs.
+///
+/// Hand-rolled for the same reason everything else here is: it is twenty lines
+/// against a dependency, and the only caller is the thumbnail proxy. Padded and
+/// with the `+/` alphabet, unlike `discovery`'s unpadded base64url -- a data URL
+/// has to be the flavour a browser decodes.
+pub(crate) fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 /// Lowercase extension without the dot. `""` when there is none.
 pub(crate) fn ext_of(name: &str) -> String {
     Path::new(name)

@@ -13,10 +13,11 @@ Tauri v2, vanilla HTML/CSS/JS, **no bundler and no npm dependencies**.
 
 - **Find other devices on the network automatically**, the way Bluetooth lists
   nearby ones. Pair once per device; the list survives restarts.
-- **One switch to go visible or hidden**, the same switch the server has. Hidden
-  stops the beacon and nothing else: you still see everyone, and devices you
-  have already paired with can still reach you.
-- **Send files straight to a paired device**, and browse or pull from theirs.
+- **Browse what a paired device shares**, on a page of its own — thumbnails, a
+  full-size preview, video that seeks, and downloads either as separate files or
+  as one `.zip`, your choice.
+- **One switch.** Starting the server is the whole decision: it shares your
+  folders and makes you findable, because those were never two questions.
 - **Share folders or individual files.** Each share gets its own secret link, so
   you can hand out one folder without exposing the rest.
 - **A 6-digit PIN** gates the whole server (toggleable). Wrong-PIN attempts are
@@ -40,25 +41,24 @@ seconds. Click **Pair** on one; both then show the same six-digit code and you
 tap **Accept** on the other. Nothing to type — and the matching code is what
 stops a stranger on the same Wi-Fi from impersonating your laptop.
 
-After that each can send files to the other (with an Accept prompt, or silently
-if you flip *always accept* for that device) and browse the other's shares
-without a PIN.
+After that each can browse the other's shares without a PIN, from the
+**Network** page. **Devices** does pairing and nothing else; **Shares** is what
+you hand out; **Network** is what you can reach.
 
-**Devices → the visibility switch** takes you off the network's radar without
-stopping anything else. It is deliberately the same control as the server's
-power switch, and it reads the same way: a title that says what is true now, a
-pill that says whether anything is actually being announced.
+**Nothing pushes.** A device cannot send you a file, only offer one for you to
+come and take. That is a smaller protocol and a much smaller question — there is
+no prompt to accept, no folder to nominate in advance, and no way for a paired
+machine to put bytes on your disk while you are not looking.
 
 **Phones can't be peers** — there is no desktop binary for them. They keep the
-browser flow, and **Send to a phone** bridges the gap: pick files, and the app
-mints a short-lived link plus a QR code the phone can scan.
+browser flow: open the address, type the PIN, browse and download.
 
 ## Running it
 
 ```sh
 npm run tauri:dev      # cargo run --manifest-path src-tauri/Cargo.toml
 npm run tauri:build    # release build
-npm test               # cargo test  (177 tests)
+npm test               # cargo test  (158 tests)
 ```
 
 There is no frontend build step — `ui/` is served straight from disk by Tauri,
@@ -101,11 +101,14 @@ src-tauri/
     zipstream.rs           forward-only ZIP writer
     discovery.rs           UDP beacon: encode/decode, announce + receive loops
     peers.rs               pairing state machine + the /api/peer/* handlers
-    peerclient.rs          the outbound half: pairing, sending, pulling
-    transfer.rs            transfer table + the inbound .part write path
+    peerclient.rs          the outbound half: pairing, browsing, pulling
     tasks.rs               every #[tauri::command]
     utils.rs, tests.rs
 ```
+
+The desktop panel's three file pages divide by *whose files*: **Shares** is what
+you hand out, **Network** is what other devices hand to you, **Devices** is only
+who you have paired with. They were one page once, and it did all three badly.
 
 The **two-frontend split** is the central structural decision: `ui/` is what the
 app window shows, `src-tauri/web/` is what phones see. The receiver UI uses no
@@ -123,6 +126,12 @@ project whose whole boast is not having one. The three inline SVG copies (the
 window header, the PIN screen, the favicon) come from `--svg`, so the drawing
 and the icons cannot drift. Sizes at or below 32px drop the outer arc and
 thicken what is left; two thin arcs at 16px are a green smudge.
+
+There is no tile behind the mark. A plate inset from the canvas, with the glyph
+inset again inside it, is why this icon used to sit visibly smaller in the
+taskbar than everything beside it — so the mark runs to the edges instead, on
+transparency, and the gradient's dark stop is lifted enough to survive a white
+taskbar as well as a black one.
 
 The `.ico` carries ten sizes, not the usual handful, because a missing size is
 not a missing icon — the shell scales a neighbour instead, and that upscale is
@@ -225,6 +234,14 @@ seeing yours and grind the two codes into agreement — which is the entire atta
 numeric comparison exists to stop. It is what Bluetooth SSP does, for the same
 reason.
 
+**Devices pull; nothing pushes.** Two devices used to be able to send files at
+each other, which needed an offer protocol, an accept prompt, a nominated
+receive folder, a `.part` write path and a transfer table — around 1,500 lines
+whose entire job was making it safe for someone else to write to your disk.
+Browsing replaces all of it: the Network page reads over the same routes a
+browser uses, and a download is this machine deciding to fetch something. The
+offer routes are gone from the router, and a test asserts they stay gone.
+
 **Peers reuse the browser's routes, not a parallel API.** A paired device gets a
 real `SessionScope::Peer`, so `/api/list` and `/files/…` serve it unchanged —
 which means the path-traversal test table can be replayed with a bearer token
@@ -248,6 +265,9 @@ its issuer.
 |---|---|
 | ![](docs/screenshots/desktop-shares.png) | ![](docs/screenshots/desktop-activity.png) |
 
-| Desktop — devices | Pairing code | Incoming files |
-|---|---|---|
-| ![](docs/screenshots/desktop-devices.png) | ![](docs/screenshots/pairing-code.png) | ![](docs/screenshots/incoming-files.png) |
+| Desktop — devices | Pairing code |
+|---|---|
+| ![](docs/screenshots/desktop-devices.png) | ![](docs/screenshots/pairing-code.png) |
+
+The Devices and Activity shots predate the split into Shares / Network /
+Devices, and there is no Network shot yet.

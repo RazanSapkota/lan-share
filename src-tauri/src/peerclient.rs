@@ -5,7 +5,6 @@
 //! would drag in a TLS stack that plaintext LAN traffic has no use for.
 
 use std::{
-    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -22,7 +21,7 @@ use serde_json::Value;
 
 use crate::{
     auth,
-    models::{OfferedFile, Peer},
+    models::Peer,
     peers::{commit_of, pair_code},
     utils::now_ms,
 };
@@ -137,6 +136,108 @@ pub(crate) async fn hello(address: &str) -> Result<Hello> {
 /// step for no gain.
 pub(crate) async fn get_authed(address: &str, path: &str, token: &str) -> Result<Value> {
     get_json(address, path, Some(token)).await
+}
+
+/// Fetch bytes from a paired device, with the content type it declared.
+///
+/// For thumbnails: the desktop UI cannot put a bearer token on an `<img src>`,
+/// so small images are proxied through here and handed over as data URLs. Not
+/// for large files -- `stream_authed` exists for those.
+pub(crate) async fn get_authed_bytes(
+    address: &str,
+    path: &str,
+    token: &str,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, String)> {
+    let client = client();
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(url(address, path))
+        .header(hyper::header::HOST, address)
+        .header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Full::new(Bytes::new()))?;
+
+    let response = tokio::time::timeout(REQUEST_TIMEOUT, client.request(request))
+        .await
+        .map_err(|_| anyhow!("the device did not respond"))?
+        .map_err(|e| anyhow!("could not reach the device: {e}"))?;
+
+    let status = response.status();
+    let mime = response
+        .headers()
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    if !status.is_success() {
+        return Err(anyhow!("the device refused the request ({status})"));
+    }
+
+    // Bounded on the way in: this is a remote machine's answer, and a
+    // thumbnail route that returned a film would otherwise be ours to hold in
+    // memory.
+    let mut body = response.into_body();
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| anyhow!("the transfer stopped: {e}"))?;
+        if let Some(chunk) = frame.data_ref() {
+            if out.len() + chunk.len() > max_bytes {
+                return Err(anyhow!("the device sent more than expected"));
+            }
+            out.extend_from_slice(chunk);
+        }
+    }
+    Ok((out, mime))
+}
+
+/// Stream a file from a paired device, handing every chunk to `on_chunk`.
+///
+/// Never buffers the whole body: a folder download is however many gigabytes
+/// the other machine has, and the point of pulling rather than pushing is that
+/// this side decides when to stop. Returning `false` from `on_chunk` does
+/// exactly that.
+pub(crate) async fn stream_authed(
+    address: &str,
+    path: &str,
+    token: &str,
+    mut on_chunk: impl FnMut(&[u8]) -> bool,
+) -> Result<u64> {
+    let client = client();
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(url(address, path))
+        .header(hyper::header::HOST, address)
+        .header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Full::new(Bytes::new()))?;
+
+    // Only the *connect* is deadlined. A big file legitimately takes longer
+    // than any request timeout worth setting, and the chunk loop below notices
+    // a dead peer soon enough.
+    let response = tokio::time::timeout(REQUEST_TIMEOUT, client.request(request))
+        .await
+        .map_err(|_| anyhow!("the device did not respond"))?
+        .map_err(|e| anyhow!("could not reach the device: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "the device refused the request ({})",
+            response.status()
+        ));
+    }
+
+    let mut body = response.into_body();
+    let mut total = 0u64;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| anyhow!("the transfer stopped: {e}"))?;
+        if let Some(chunk) = frame.data_ref() {
+            total += chunk.len() as u64;
+            if !on_chunk(chunk) {
+                return Err(anyhow!("cancelled"));
+            }
+        }
+    }
+    Ok(total)
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +392,6 @@ pub(crate) async fn await_pairing(
                     added_ms: now_ms(),
                     last_seen_ms: now_ms(),
                     last_address: Some(handshake.address.clone()),
-                    auto_accept: false,
                     blocked: false,
                     note: None,
                 });
@@ -307,101 +407,17 @@ pub(crate) async fn await_pairing(
 // ---------------------------------------------------------------------------
 // Sending files
 // ---------------------------------------------------------------------------
+// Play links
+// ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Deserialize)]
-struct OfferReply {
-    #[serde(rename = "offerId")]
-    offer_id: String,
-    state: String,
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct PlayLink {
+    pub(crate) token: String,
+    pub(crate) name: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct StateReply {
-    state: String,
-}
-
-pub(crate) struct SendPlan {
-    pub(crate) files: Vec<(PathBuf, OfferedFile)>,
-    pub(crate) total_bytes: u64,
-}
-
-/// Stat the chosen paths into an offer. Unreadable files are dropped here
-/// rather than failing the whole batch mid-flight.
-pub(crate) fn plan_send(paths: &[String]) -> Result<SendPlan> {
-    let mut files = Vec::new();
-    let mut total_bytes = 0u64;
-    for raw in paths {
-        let path = PathBuf::from(raw);
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
-            continue;
-        };
-        // Validated with the same rule the receiver applies, so a name that
-        // would be refused there is caught before anything is sent.
-        if crate::shares::check_segment(&name).is_err() {
-            continue;
-        }
-        total_bytes += meta.len();
-        files.push((
-            path,
-            OfferedFile {
-                name,
-                size: meta.len(),
-            },
-        ));
-    }
-    if files.is_empty() {
-        return Err(anyhow!("none of those files can be sent"));
-    }
-    Ok(SendPlan { files, total_bytes })
-}
-
-/// Make the offer and wait for the far side's answer.
-pub(crate) async fn offer_and_wait(
-    address: &str,
-    token: &str,
-    plan: &SendPlan,
-    cancel: &Arc<AtomicBool>,
-) -> Result<String> {
-    let manifest: Vec<&OfferedFile> = plan.files.iter().map(|(_, f)| f).collect();
-    let reply: OfferReply = post_json_auth(
-        address,
-        "/api/peer/offer",
-        token,
-        &serde_json::json!({ "files": manifest }),
-    )
-    .await?;
-
-    if reply.state == "accepted" {
-        return Ok(reply.offer_id);
-    }
-
-    // No deadline of our own: the receiver expires the offer, and a sender
-    // that gave up first would leave the far side staring at a dead prompt.
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            return Err(anyhow!("cancelled"));
-        }
-        tokio::time::sleep(Duration::from_millis(700)).await;
-        let status: StateReply = get_json(
-            address,
-            &format!("/api/peer/offer/{}", reply.offer_id),
-            Some(token),
-        )
-        .await?;
-        match status.state.as_str() {
-            "accepted" => return Ok(reply.offer_id),
-            "declined" => return Err(anyhow!("declined")),
-            _ => {}
-        }
-    }
-}
-
+/// POST JSON with the pair token, for the one authenticated POST left: minting
+/// a play link on the far device.
 async fn post_json_auth<T: DeserializeOwned>(
     address: &str,
     path: &str,
@@ -416,8 +432,7 @@ async fn post_json_auth<T: DeserializeOwned>(
         .header(hyper::header::HOST, address)
         .header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
         // The same assertion the receiver page makes: this came from our own
-        // client, not from a form somewhere. Routes that check for it (the play
-        // link) then need no peer-shaped exception.
+        // client, not from a form somewhere.
         .header(crate::models::CSRF_HEADER, "1")
         .body(Full::new(Bytes::from(serde_json::to_vec(body)?)))?;
 
@@ -433,6 +448,7 @@ async fn post_json_auth<T: DeserializeOwned>(
         .await
         .map_err(|e| anyhow!("could not read the reply: {e}"))?
         .to_bytes();
+
     if !status.is_success() {
         let detail = serde_json::from_slice::<Value>(&bytes)
             .ok()
@@ -441,16 +457,6 @@ async fn post_json_auth<T: DeserializeOwned>(
         return Err(anyhow!("{detail}"));
     }
     serde_json::from_slice(&bytes).context("the device sent a reply we could not read")
-}
-
-// ---------------------------------------------------------------------------
-// Play links
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub(crate) struct PlayLink {
-    pub(crate) token: String,
-    pub(crate) name: String,
 }
 
 /// Ask a paired device for a link its file can be played from.
@@ -472,108 +478,4 @@ pub(crate) async fn play_link(
         &serde_json::json!({ "share": share_id, "path": path }),
     )
     .await
-}
-
-/// Upload one file, reporting bytes as they leave.
-///
-/// The body is read in chunks off the blocking pool and pushed through a
-/// bounded channel, so a slow receiver applies backpressure instead of letting
-/// us buffer a 4 GB file in memory.
-pub(crate) async fn send_file(
-    address: &str,
-    token: &str,
-    offer_id: &str,
-    index: usize,
-    path: &Path,
-    size: u64,
-    cancel: Arc<AtomicBool>,
-    mut on_progress: impl FnMut(u64) + Send + 'static,
-) -> Result<()> {
-    use http_body_util::StreamBody;
-    use hyper::body::Frame;
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(4);
-    let path = path.to_path_buf();
-    let reader_cancel = Arc::clone(&cancel);
-
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-        let mut file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(err) => {
-                let _ = tx.blocking_send(Err(err));
-                return;
-            }
-        };
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            if reader_cancel.load(Ordering::SeqCst) {
-                let _ = tx.blocking_send(Err(std::io::Error::other("cancelled")));
-                return;
-            }
-            match file.read(&mut buf) {
-                Ok(0) => return,
-                Ok(n) => {
-                    if tx
-                        .blocking_send(Ok(Frame::data(Bytes::copy_from_slice(&buf[..n]))))
-                        .is_err()
-                    {
-                        return; // receiver gone
-                    }
-                }
-                Err(err) => {
-                    let _ = tx.blocking_send(Err(err));
-                    return;
-                }
-            }
-        }
-    });
-
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let body = StreamBody::new(stream);
-
-    let client: Client<_, StreamBody<tokio_stream::wrappers::ReceiverStream<_>>> = {
-        let mut connector = hyper_util::client::legacy::connect::HttpConnector::new();
-        connector.set_connect_timeout(Some(CONNECT_TIMEOUT));
-        connector.set_nodelay(true);
-        Client::builder(TokioExecutor::new()).build(connector)
-    };
-
-    let request = Request::builder()
-        .method(Method::PUT)
-        .uri(url(
-            address,
-            &format!("/api/peer/file/{offer_id}/{index}"),
-        ))
-        .header(hyper::header::HOST, address)
-        .header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(hyper::header::CONTENT_TYPE, "application/octet-stream")
-        // Explicit, not chunked: the receiver requires it, because it is the
-        // only way to tell a finished transfer from an abandoned one.
-        .header(hyper::header::CONTENT_LENGTH, size)
-        .body(body)?;
-
-    let response = client
-        .request(request)
-        .await
-        .map_err(|e| anyhow!("the transfer failed: {e}"))?;
-
-    let status = response.status();
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| anyhow!("could not read the reply: {e}"))?
-        .to_bytes();
-
-    if !status.is_success() {
-        let detail = serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
-            .unwrap_or_else(|| status.to_string());
-        return Err(anyhow!("{detail}"));
-    }
-
-    on_progress(size);
-    Ok(())
 }

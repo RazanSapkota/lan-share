@@ -18,11 +18,10 @@ use crate::{
     activity, auth, config, media,
     models::{
         ActivityEntry, AppConfig, AppState, DeviceIdentity, DiscoveredPeer, DiscoveredPeerView,
-        DiscoveryStatus, FirewallHint, HandoffView, IndexShareResponse, LanUrl, ListingResponse,
-        OfferView,
+        DiscoveryStatus, DownloadResult, FirewallHint, IndexShareResponse, LanUrl,
         PairPromptView, PairResult, Peer, PeerView, PrewarmResponse, ProgressPayload, QrPayload,
         SaveConfigResult, ServerSettings, ServerStatus, Session, SessionView, Share, ShareView,
-        TaskHandle, ThumbCacheStats, Transfer,
+        TaskHandle, ThumbCacheStats,
     },
     net, server, shares, utils,
 };
@@ -534,30 +533,6 @@ pub(crate) fn set_inbox_share(
         // on the winner.
         Ok(())
     })
-}
-
-/// Browse a share from the DESKTOP through the exact same `resolve_within` the
-/// server uses, so the containment layer is exercisable without a browser.
-#[tauri::command]
-pub(crate) fn preview_share(
-    state: State<'_, AppState>,
-    share_id: String,
-    rel_path: String,
-) -> Result<ListingResponse, String> {
-    let settings = state
-        .settings
-        .read()
-        .map(|s| s.clone())
-        .unwrap_or_default();
-    let registry = state
-        .shares
-        .read()
-        .map_err(|_| "share state poisoned".to_string())?;
-    let share = registry
-        .by_id(&share_id)
-        .ok_or_else(|| format!("share {share_id} not found"))?;
-    shares::list_directory(share, &rel_path, &settings, None, None)
-        .map_err(|reject| reject.message())
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,23 +1205,13 @@ pub(crate) fn get_device_identity(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> DeviceIdentity {
+    let _ = state;
     let config = config::load_config_impl(&app);
-    let receive_dir = state
-        .receive_dir
-        .lock()
-        .ok()
-        .and_then(|d| d.clone())
-        .map(|d| shares::display_path(&d))
-        .or_else(|| config.receive_dir.clone())
-        .unwrap_or_default();
-
     DeviceIdentity {
         device_id: config.device_id,
         name: config.device_name,
         platform: crate::models::platform_name(),
         addresses: net::lan_addresses().into_iter().map(|a| a.ip).collect(),
-        discoverable: config.discoverable,
-        receive_dir,
         peering_enabled: config.peering_enabled,
     }
 }
@@ -1267,65 +1232,6 @@ pub(crate) fn set_device_name(
     })
 }
 
-/// Make this device visible or invisible to the rest of the network.
-///
-/// Returns whether the server had to be restarted, so the UI can say so.
-#[tauri::command]
-pub(crate) fn set_discoverable(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    enabled: bool,
-) -> Result<bool, String> {
-    let was_running = server::is_running(&state);
-    // Whether the socket is really there, NOT what the config flag says. The
-    // socket survives a flip to invisible, so flipping back on normally needs
-    // nothing but a poke -- restarting on the flag's say-so tore down every
-    // in-flight download for no reason. A restart is left as the one repair
-    // for a socket that genuinely is not bound, which is the bind-failed case.
-    let has_socket = state.discovery_bound.load(Ordering::Relaxed);
-
-    mutate_config(&app, &state, |config| {
-        config.discoverable = enabled;
-        Ok(())
-    })?;
-
-    if enabled && was_running && !has_socket {
-        server::restart_server_impl(&app, &state).map_err(|e| e.to_string())?;
-        return Ok(true);
-    }
-
-    if enabled {
-        // Re-arm the inbound-path heuristic: it works by hearing our own
-        // beacon, and we have not sent one while hidden. Without this the
-        // Devices page would cry "firewall" the instant visibility came back.
-        state
-            .discovery_started_ms
-            .store(utils::now_ms(), Ordering::Relaxed);
-    }
-    // Announce (or say goodbye) now rather than up to five seconds from now.
-    state.discovery_wake.notify_one();
-    Ok(false)
-}
-
-#[tauri::command]
-pub(crate) fn pick_receive_folder(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
-    let Some(path) = rfd::FileDialog::new().pick_folder() else {
-        return Ok(None);
-    };
-    let display = path.display().to_string();
-    mutate_config(&app, &state, |config| {
-        config.receive_dir = Some(display.clone());
-        Ok(())
-    })?;
-    // Re-resolve at once, so a running server writes to the new folder rather
-    // than the one it happened to start with.
-    let resolved = crate::peers::resolve_receive_dir(&app, &state).map_err(|e| e.to_string())?;
-    Ok(Some(shares::display_path(&resolved)))
-}
-
 // ---------------------------------------------------------------------------
 // Peers: discovery
 // ---------------------------------------------------------------------------
@@ -1334,10 +1240,10 @@ pub(crate) fn pick_receive_folder(
 pub(crate) fn list_discovered(state: State<'_, AppState>) -> DiscoveryStatus {
     let now = utils::now_ms();
     let running = server::is_running(&state);
-    let (port, discoverable) = state
+    let (port, peering) = state
         .settings
         .read()
-        .map(|s| (s.discovery_port, s.discoverable && s.peering_enabled))
+        .map(|s| (s.discovery_port, s.peering_enabled))
         .unwrap_or((0, false));
 
     let paired: std::collections::HashSet<String> = state
@@ -1372,7 +1278,7 @@ pub(crate) fn list_discovered(state: State<'_, AppState>) -> DiscoveryStatus {
     let error = state.discovery_error.lock().ok().and_then(|e| e.clone());
     // The health heuristic listens for our own beacon, so it only says
     // anything while we are actually announcing.
-    let health = if !running || !discoverable {
+    let health = if !running || !peering {
         "ok".to_string()
     } else if error.is_some() {
         "error".to_string()
@@ -1381,8 +1287,7 @@ pub(crate) fn list_discovered(state: State<'_, AppState>) -> DiscoveryStatus {
     };
 
     DiscoveryStatus {
-        running: running && discoverable && error.is_none(),
-        // Bound means we can hear others, which stays true while hidden.
+        running: running && peering && error.is_none(),
         listening: running && state.discovery_bound.load(Ordering::Relaxed),
         port,
         health,
@@ -1698,7 +1603,6 @@ pub(crate) fn list_peers(state: State<'_, AppState>) -> Vec<PeerView> {
                         address,
                         last_seen_ms: seen,
                         online: now.saturating_sub(seen) <= crate::models::PEER_OFFLINE_AFTER_MS,
-                        auto_accept: p.auto_accept,
                         blocked: p.blocked,
                         added_ms: p.added_ms,
                         note: p.note.clone(),
@@ -1762,251 +1666,9 @@ pub(crate) fn set_peer_blocked(
             .find(|p| p.device_id == device_id)
             .ok_or_else(|| "that device is not paired".to_string())?;
         peer.blocked = blocked;
-        if blocked {
-            // Blocking must also stop unattended receipt, or the block would
-            // cover browsing and leave the silent path open.
-            peer.auto_accept = false;
-        }
         Ok(())
     })
 }
-
-#[tauri::command]
-pub(crate) fn set_peer_auto_accept(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    device_id: String,
-    enabled: bool,
-) -> Result<(), String> {
-    mutate_config(&app, &state, |config| {
-        let peer = config
-            .peers
-            .iter_mut()
-            .find(|p| p.device_id == device_id)
-            .ok_or_else(|| "that device is not paired".to_string())?;
-        if enabled && peer.blocked {
-            return Err("unblock the device first".to_string());
-        }
-        peer.auto_accept = enabled;
-        Ok(())
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Peers: transfers
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub(crate) fn list_transfers(state: State<'_, AppState>) -> Vec<Transfer> {
-    crate::transfer::snapshot(&state)
-}
-
-#[tauri::command]
-pub(crate) fn cancel_transfer(state: State<'_, AppState>, transfer_id: u64) -> bool {
-    crate::transfer::request_cancel(&state, transfer_id)
-}
-
-#[tauri::command]
-pub(crate) fn list_incoming_offers(state: State<'_, AppState>) -> Vec<OfferView> {
-    crate::peers::list_offers(&state)
-}
-
-#[tauri::command]
-pub(crate) fn accept_offer(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    offer_id: String,
-    always_accept: bool,
-) -> Result<(), String> {
-    let peer_id =
-        crate::peers::set_offer_state(&state, &offer_id, true).map_err(|e| e.to_string())?;
-    if always_accept {
-        // Set in the SAME call rather than making the UI follow up: across two
-        // round trips the next offer from this peer could land in between and
-        // be judged against the policy the user just changed.
-        set_peer_auto_accept(app, state, peer_id, true)?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn decline_offer(state: State<'_, AppState>, offer_id: String) -> Result<(), String> {
-    crate::peers::set_offer_state(&state, &offer_id, false)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
-/// Send files to a paired device.
-#[tauri::command]
-pub(crate) fn start_send_files_task(
-    state: State<'_, AppState>,
-    device_id: String,
-    paths: Vec<String>,
-) -> Result<TaskHandle, String> {
-    let peer = {
-        let registry = state
-            .peers
-            .read()
-            .map_err(|_| "peer state poisoned".to_string())?;
-        registry
-            .by_id(&device_id)
-            .cloned()
-            .ok_or_else(|| "that device is not paired".to_string())?
-    };
-    if peer.blocked {
-        return Err("that device is blocked".to_string());
-    }
-
-    let address = resolve_peer_address(&state, &peer)
-        .ok_or_else(|| format!("{} is not reachable right now", peer.name))?;
-    let plan = crate::peerclient::plan_send(&paths).map_err(|e| e.to_string())?;
-
-    // Allocated only once everything that can fail synchronously has passed, so
-    // a rejected send leaves no orphan task or transfer row behind.
-    let task_id = alloc_task(&state, "send_starting", "Waiting for the other device")?;
-    let transfer_id = crate::transfer::begin_state(
-        &state,
-        "out",
-        &peer.device_id,
-        &peer.name,
-        plan.files.len(),
-        plan.total_bytes,
-    );
-    let cancel = crate::transfer::cancel_flag(&state, transfer_id);
-
-    let tasks = Arc::clone(&state.tasks);
-    let transfers = Arc::clone(&state.transfers);
-    let cancels = Arc::clone(&state.transfer_cancels);
-
-    thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(err) => {
-                finish_send_task(&tasks, task_id, Err(err.to_string()));
-                return;
-            }
-        };
-
-        let result = runtime.block_on(async {
-            let offer_id =
-                crate::peerclient::offer_and_wait(&address, &peer.out_token, &plan, &cancel)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-            for (index, (path, meta)) in plan.files.iter().enumerate() {
-                if cancel.load(Ordering::SeqCst) {
-                    return Err("cancelled".to_string());
-                }
-                edit_transfer(&transfers, transfer_id, |row| {
-                    row.file_index = index;
-                    row.file_name = meta.name.clone();
-                    row.file_bytes = 0;
-                    row.file_total_bytes = meta.size;
-                });
-                set_task_progress(
-                    &tasks,
-                    task_id,
-                    "sending",
-                    index as f64 / plan.files.len().max(1) as f64,
-                    format!("{} ({}/{})", meta.name, index + 1, plan.files.len()),
-                );
-
-                let progress_table = Arc::clone(&transfers);
-                crate::peerclient::send_file(
-                    &address,
-                    &peer.out_token,
-                    &offer_id,
-                    index,
-                    path,
-                    meta.size,
-                    Arc::clone(&cancel),
-                    move |sent| {
-                        edit_transfer(&progress_table, transfer_id, |row| {
-                            row.bytes += sent;
-                            row.file_bytes = sent;
-                        });
-                    },
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            }
-            Ok::<_, String>(plan.files.len())
-        });
-
-        let (status, error) = match &result {
-            Ok(_) => ("done", None),
-            Err(err) if err == "cancelled" => ("cancelled", None),
-            Err(err) if err == "declined" => ("declined", None),
-            Err(err) => ("failed", Some(err.clone())),
-        };
-        edit_transfer(&transfers, transfer_id, |row| {
-            row.status = status.to_string();
-            row.error = error.clone();
-        });
-        if let Ok(mut c) = cancels.lock() {
-            c.remove(&transfer_id);
-        }
-        finish_send_task(&tasks, task_id, result.map(|n| n as u64));
-    });
-
-    Ok(TaskHandle { id: task_id })
-}
-
-fn edit_transfer<F: FnOnce(&mut Transfer)>(
-    transfers: &Arc<Mutex<std::collections::VecDeque<Transfer>>>,
-    id: u64,
-    edit: F,
-) {
-    if let Ok(mut rows) = transfers.lock() {
-        if let Some(row) = rows.iter_mut().find(|t| t.id == id) {
-            edit(row);
-            row.updated_at_ms = utils::now_ms();
-        }
-    }
-}
-
-fn finish_send_task(
-    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
-    task_id: u64,
-    result: Result<u64, String>,
-) {
-    if let Ok(mut guard) = tasks.lock() {
-        if let Some(payload) = guard.get_mut(&task_id) {
-            payload.done = true;
-            payload.progress = 1.0;
-            match result {
-                Ok(count) => {
-                    payload.phase = "done".to_string();
-                    payload.message = format!("Sent {count} file(s)");
-                }
-                Err(err) => {
-                    payload.phase = "error".to_string();
-                    payload.error = Some(err);
-                }
-            }
-        }
-    }
-}
-
-/// Where to reach a peer: the live beacon first, then whatever address they
-/// last contacted us from.
-fn resolve_peer_address(state: &AppState, peer: &Peer) -> Option<String> {
-    if let Ok(table) = state.discovered.lock() {
-        if let Some(found) = table.get(&peer.device_id) {
-            if let Some(address) = found.best_address() {
-                return Some(format!("{}:{}", address, found.port));
-            }
-        }
-    }
-    peer.last_address.clone()
-}
-
-// ---------------------------------------------------------------------------
-// Peers: browse
-// ---------------------------------------------------------------------------
 
 /// List a paired device's shares, or one folder inside one.
 ///
@@ -2022,22 +1684,7 @@ pub(crate) async fn peer_browse(
     share_id: Option<String>,
     path: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let (token, address) = {
-        let registry = state
-            .peers
-            .read()
-            .map_err(|_| "peer state poisoned".to_string())?;
-        let peer = registry
-            .by_id(&device_id)
-            .cloned()
-            .ok_or_else(|| "that device is not paired".to_string())?;
-        if peer.blocked {
-            return Err("that device is blocked".to_string());
-        }
-        let address = resolve_peer_address(&state, &peer)
-            .ok_or_else(|| format!("{} is not reachable right now", peer.name))?;
-        (peer.out_token, address)
-    };
+    let (token, address) = peer_endpoint(&state, &device_id)?;
 
     let route = match share_id {
         Some(share) => format!(
@@ -2065,32 +1712,9 @@ pub(crate) async fn play_peer_file(
     share_id: String,
     path: String,
 ) -> Result<String, String> {
-    let (token, address) = {
-        let registry = state
-            .peers
-            .read()
-            .map_err(|_| "peer state poisoned".to_string())?;
-        let peer = registry
-            .by_id(&device_id)
-            .cloned()
-            .ok_or_else(|| "that device is not paired".to_string())?;
-        if peer.blocked {
-            return Err("that device is blocked".to_string());
-        }
-        let address = resolve_peer_address(&state, &peer)
-            .ok_or_else(|| format!("{} is not reachable right now", peer.name))?;
-        (peer.out_token, address)
-    };
+    let (token, address) = peer_endpoint(&state, &device_id)?;
 
-    let link = crate::peerclient::play_link(&address, &token, &share_id, &path)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let url = format!(
-        "http://{address}/play/{}/{}",
-        utils::url_encode_segment(&link.token),
-        utils::url_encode_segment(&link.name)
-    );
+    let (url, name) = peer_play_url(&address, &token, &share_id, &path).await?;
 
     let player = config::load_config_impl(&app).external_player;
     if player.is_some() {
@@ -2099,10 +1723,574 @@ pub(crate) async fn play_peer_file(
         // No configured player, so we cannot hand over a bare URL: the OS would
         // route it to a browser, which is the one program that cannot play it.
         // A one-line playlist turns it into a file type every player claims.
-        let playlist = write_play_playlist(&app, &link.name, &url)?;
+        let playlist = write_play_playlist(&app, &name, &url)?;
         launch_player(None, &playlist)?;
     }
     Ok(url)
+}
+
+/// Mint a play link on the far device and build the URL it serves from.
+///
+/// Shared by "open in player" and by the Network page's own preview, because
+/// they want the same thing: a plain `http://` URL for one file, good for a few
+/// hours, that something other than this app can fetch. See `models::PlayToken`.
+async fn peer_play_url(
+    address: &str,
+    token: &str,
+    share_id: &str,
+    path: &str,
+) -> Result<(String, String), String> {
+    let link = crate::peerclient::play_link(address, token, share_id, path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "http://{address}/play/{}/{}",
+        utils::url_encode_segment(&link.token),
+        utils::url_encode_segment(&link.name)
+    );
+    Ok((url, link.name))
+}
+
+/// A URL the desktop UI can point an `<img>`, `<video>` or `<audio>` at.
+///
+/// The webview cannot attach our pair token to a subresource request, so it
+/// gets a play link instead -- which means real `Range` support, and video that
+/// seeks, rather than a base64 blob of the whole file.
+#[tauri::command]
+pub(crate) async fn peer_media_url(
+    state: State<'_, AppState>,
+    device_id: String,
+    share_id: String,
+    path: String,
+) -> Result<String, String> {
+    let (token, address) = peer_endpoint(&state, &device_id)?;
+    let (url, _) = peer_play_url(&address, &token, &share_id, &path).await?;
+    Ok(url)
+}
+
+/// A thumbnail from another device, as a `data:` URL.
+///
+/// Proxied rather than linked: a grid is hundreds of images, and minting a play
+/// link per tile would churn through the token table for pictures measured in
+/// kilobytes. The full-size preview goes the other way round -- see
+/// `peer_media_url`.
+#[tauri::command]
+pub(crate) async fn peer_thumb(
+    state: State<'_, AppState>,
+    device_id: String,
+    share_id: String,
+    path: String,
+) -> Result<String, String> {
+    /// Generous for a thumbnail, small enough that a hostile answer cannot
+    /// balloon this process.
+    const MAX_THUMB_BYTES: usize = 2 * 1024 * 1024;
+
+    let (token, address) = peer_endpoint(&state, &device_id)?;
+    let route = format!(
+        "/api/thumb?share={}&path={}",
+        utils::url_encode(&share_id),
+        utils::url_encode(&path)
+    );
+
+    let (bytes, mime) =
+        crate::peerclient::get_authed_bytes(&address, &route, &token, MAX_THUMB_BYTES)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    Ok(format!("data:{};base64,{}", mime, utils::base64_encode(&bytes)))
+}
+
+// ---------------------------------------------------------------------------
+// Network: downloading
+// ---------------------------------------------------------------------------
+
+/// One thing the user ticked: a file, or a folder to be walked.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct DownloadItem {
+    pub(crate) path: String,
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) is_dir: bool,
+    #[serde(default)]
+    pub(crate) size: u64,
+}
+
+/// A file to fetch, with where it goes relative to the destination.
+struct Planned {
+    /// Path on the other device, inside the share.
+    remote: String,
+    /// Path under the destination folder, or inside the archive.
+    relative: String,
+    size: u64,
+}
+
+/// Pull files from a paired device.
+///
+/// Zipping is the user's choice and not a consequence of how many things they
+/// picked -- one file can be zipped, and forty can arrive as forty files in a
+/// folder tree. The one shortcut: a single folder, zipped, streams the other
+/// device's own `/zip` route, which already builds exactly this archive and
+/// costs one request instead of one per file.
+#[tauri::command]
+pub(crate) fn start_peer_download_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+    share_id: String,
+    items: Vec<DownloadItem>,
+    zip: bool,
+) -> Result<TaskHandle, String> {
+    if items.is_empty() {
+        return Err("nothing selected".to_string());
+    }
+    let (token, address) = peer_endpoint(&state, &device_id)?;
+    let dest_root = crate::peers::downloads_dir(&app).map_err(|e| e.to_string())?;
+
+    let task_id = alloc_task(&state, "download_starting", "Preparing")?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Ok(mut cancels) = state.cancellations.lock() {
+        cancels.insert(task_id, Arc::clone(&cancel));
+    }
+    let tasks = Arc::clone(&state.tasks);
+
+    tauri::async_runtime::spawn(async move {
+        let result =
+            run_peer_download(&address, &token, &share_id, items, zip, &dest_root, &tasks, task_id, &cancel)
+                .await;
+        finish_download_task(&tasks, task_id, result);
+    });
+
+    Ok(TaskHandle { id: task_id })
+}
+
+async fn run_peer_download(
+    address: &str,
+    token: &str,
+    share_id: &str,
+    items: Vec<DownloadItem>,
+    zip: bool,
+    dest_root: &std::path::Path,
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    cancel: &Arc<AtomicBool>,
+) -> Result<DownloadResult, String> {
+    // The whole-folder shortcut: their zip route already produces this archive.
+    if zip && items.len() == 1 && items[0].is_dir {
+        set_task_progress(tasks, task_id, "download_running", 0.0, "Requesting the archive");
+        let route = format!(
+            "/zip/{}/{}",
+            utils::url_encode_segment(share_id),
+            encode_remote_path(&items[0].path)
+        );
+        let target = utils::unique_destination(dest_root, &format!("{}.zip", items[0].name))
+            .ok_or_else(|| "could not pick a name for the archive".to_string())?;
+        let bytes =
+            stream_to_path(address, &route, token, &target, tasks, task_id, cancel, 0, None).await?;
+        return Ok(DownloadResult {
+            path: shares::display_path(&target),
+            file_count: 1,
+            total_bytes: bytes,
+            total_bytes_text: utils::format_bytes(bytes),
+            zipped: true,
+        });
+    }
+
+    // Otherwise: expand folders into their files, so a tree arrives as a tree.
+    set_task_progress(tasks, task_id, "download_running", 0.0, "Listing files");
+    let mut planned: Vec<Planned> = Vec::new();
+    for item in &items {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        if item.is_dir {
+            expand_folder(address, token, share_id, &item.path, &item.name, &mut planned).await?;
+        } else {
+            planned.push(Planned {
+                remote: item.path.clone(),
+                relative: item.name.clone(),
+                size: item.size,
+            });
+        }
+    }
+    if planned.is_empty() {
+        return Err("nothing to download".to_string());
+    }
+
+    let total_expected: u64 = planned.iter().map(|p| p.size).sum();
+    let file_count = planned.len() as u64;
+
+    if zip {
+        let name = if items.len() == 1 {
+            format!("{}.zip", items[0].name)
+        } else {
+            "LAN Share selection.zip".to_string()
+        };
+        let target = utils::unique_destination(dest_root, &name)
+            .ok_or_else(|| "could not pick a name for the archive".to_string())?;
+        let bytes = zip_from_peer(
+            address, token, share_id, &planned, &target, tasks, task_id, cancel, total_expected,
+        )
+        .await?;
+        return Ok(DownloadResult {
+            path: shares::display_path(&target),
+            file_count,
+            total_bytes: bytes,
+            total_bytes_text: utils::format_bytes(bytes),
+            zipped: true,
+        });
+    }
+
+    // Separate files. Everything lands under one folder, so a multi-file pick
+    // does not scatter across Downloads.
+    let folder = if planned.len() == 1 && items.len() == 1 && !items[0].is_dir {
+        dest_root.to_path_buf()
+    } else {
+        let label = if items.len() == 1 {
+            items[0].name.clone()
+        } else {
+            "LAN Share".to_string()
+        };
+        let dir = utils::unique_destination(dest_root, &label)
+            .ok_or_else(|| "could not pick a folder name".to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        dir
+    };
+
+    let mut done_bytes = 0u64;
+    for (index, file) in planned.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        let target = safe_join(&folder, &file.relative)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let target = utils::unique_destination(
+            target.parent().unwrap_or(&folder),
+            &target
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file".to_string()),
+        )
+        .ok_or_else(|| "could not pick a file name".to_string())?;
+
+        let route = format!(
+            "/download/{}/{}",
+            utils::url_encode_segment(share_id),
+            encode_remote_path(&file.remote)
+        );
+        let label = format!("{} ({}/{})", file.relative, index + 1, planned.len());
+        let bytes = stream_to_path(
+            address,
+            &route,
+            token,
+            &target,
+            tasks,
+            task_id,
+            cancel,
+            done_bytes,
+            Some((total_expected, label)),
+        )
+        .await?;
+        done_bytes += bytes;
+    }
+
+    Ok(DownloadResult {
+        path: shares::display_path(&folder),
+        file_count,
+        total_bytes: done_bytes,
+        total_bytes_text: utils::format_bytes(done_bytes),
+        zipped: false,
+    })
+}
+
+/// Walk a folder on the other device, depth-first, collecting its files.
+///
+/// Boxed because it recurses: an `async fn` that awaits itself has an infinitely
+/// sized future otherwise.
+fn expand_folder<'a>(
+    address: &'a str,
+    token: &'a str,
+    share_id: &'a str,
+    path: &'a str,
+    prefix: &'a str,
+    out: &'a mut Vec<Planned>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        let route = format!(
+            "/api/list?share={}&path={}",
+            utils::url_encode(share_id),
+            utils::url_encode(path)
+        );
+        let listing = crate::peerclient::get_authed(address, &route, token)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let entries = listing
+            .get("entries")
+            .and_then(|e| e.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for entry in entries {
+            let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if name.is_empty() {
+                continue;
+            }
+            let child_remote = if path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{path}/{name}")
+            };
+            let child_relative = format!("{prefix}/{name}");
+
+            if entry.get("is_dir").and_then(|d| d.as_bool()).unwrap_or(false) {
+                expand_folder(address, token, share_id, &child_remote, &child_relative, out).await?;
+            } else {
+                out.push(Planned {
+                    remote: child_remote,
+                    relative: child_relative,
+                    size: entry.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
+                });
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Stream one route into one file, reporting progress as it goes.
+#[allow(clippy::too_many_arguments)]
+async fn stream_to_path(
+    address: &str,
+    route: &str,
+    token: &str,
+    target: &std::path::Path,
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    cancel: &Arc<AtomicBool>,
+    already_done: u64,
+    total: Option<(u64, String)>,
+) -> Result<u64, String> {
+    use std::io::Write as _;
+
+    let file = std::fs::File::create(target)
+        .map_err(|e| format!("could not write {}: {e}", target.display()))?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut written = 0u64;
+    let mut failure: Option<String> = None;
+
+    let result = crate::peerclient::stream_authed(address, route, token, |chunk| {
+        if cancel.load(Ordering::SeqCst) {
+            return false;
+        }
+        if let Err(err) = writer.write_all(chunk) {
+            failure = Some(err.to_string());
+            return false;
+        }
+        written += chunk.len() as u64;
+        report(tasks, task_id, already_done + written, total.as_ref());
+        true
+    })
+    .await;
+
+    let flushed = writer.flush();
+
+    if let Some(err) = failure {
+        let _ = std::fs::remove_file(target);
+        return Err(err);
+    }
+    if let Err(err) = result {
+        // A half-written file is worse than none: it looks like a download that
+        // worked until you open it.
+        let _ = std::fs::remove_file(target);
+        return Err(err.to_string());
+    }
+    flushed.map_err(|e| e.to_string())?;
+    Ok(written)
+}
+
+/// Build one archive locally out of several remote files.
+#[allow(clippy::too_many_arguments)]
+async fn zip_from_peer(
+    address: &str,
+    token: &str,
+    share_id: &str,
+    planned: &[Planned],
+    target: &std::path::Path,
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    cancel: &Arc<AtomicBool>,
+    total_expected: u64,
+) -> Result<u64, String> {
+    let file = std::fs::File::create(target)
+        .map_err(|e| format!("could not write {}: {e}", target.display()))?;
+    let mut zip = crate::zipstream::ZipStream::new(std::io::BufWriter::new(file));
+    let mut done_bytes = 0u64;
+
+    for (index, item) in planned.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(target);
+            return Err("cancelled".to_string());
+        }
+        let route = format!(
+            "/download/{}/{}",
+            utils::url_encode_segment(share_id),
+            encode_remote_path(&item.remote)
+        );
+        let label = format!("{} ({}/{})", item.relative, index + 1, planned.len());
+
+        let mut entry = zip
+            .begin_file(&item.relative, item.size, utils::now_ms())
+            .map_err(|e| e.to_string())?;
+        let mut failure: Option<String> = None;
+
+        let streamed = crate::peerclient::stream_authed(address, &route, token, |chunk| {
+            if cancel.load(Ordering::SeqCst) {
+                return false;
+            }
+            if let Err(err) = zip.write_chunk(&mut entry, chunk) {
+                failure = Some(err.to_string());
+                return false;
+            }
+            done_bytes += chunk.len() as u64;
+            report(tasks, task_id, done_bytes, Some(&(total_expected, label.clone())));
+            true
+        })
+        .await;
+
+        if let Some(err) = failure {
+            let _ = std::fs::remove_file(target);
+            return Err(err);
+        }
+        if let Err(err) = streamed {
+            let _ = std::fs::remove_file(target);
+            return Err(err.to_string());
+        }
+        zip.end_file(entry).map_err(|e| e.to_string())?;
+    }
+
+    let mut writer = zip.finish().map_err(|e| e.to_string())?;
+    {
+        use std::io::Write as _;
+        writer.flush().map_err(|e| e.to_string())?;
+    }
+    std::fs::metadata(target)
+        .map(|m| m.len())
+        .map_err(|e| e.to_string())
+}
+
+fn report(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    done: u64,
+    total: Option<&(u64, String)>,
+) {
+    let (fraction, message) = match total {
+        Some((expected, label)) if *expected > 0 => (
+            done as f64 / *expected as f64,
+            format!("{} · {}", label, utils::format_bytes(done)),
+        ),
+        // No declared total (their zip route is chunked with no length), so the
+        // bar stays indeterminate and the byte count carries the signal.
+        _ => (0.0, utils::format_bytes(done)),
+    };
+    set_task_progress(tasks, task_id, "download_running", fraction, message);
+}
+
+fn finish_download_task(
+    tasks: &Arc<Mutex<HashMap<u64, ProgressPayload>>>,
+    task_id: u64,
+    result: Result<DownloadResult, String>,
+) {
+    if let Ok(mut guard) = tasks.lock() {
+        if let Some(payload) = guard.get_mut(&task_id) {
+            payload.done = true;
+            payload.progress = 1.0;
+            match result {
+                Ok(done) => {
+                    payload.phase = "done".to_string();
+                    payload.message = format!(
+                        "{} file{} · {}",
+                        done.file_count,
+                        if done.file_count == 1 { "" } else { "s" },
+                        done.total_bytes_text
+                    );
+                    payload.download_result = Some(done);
+                }
+                Err(err) => {
+                    payload.phase = "error".to_string();
+                    payload.error = Some(err);
+                }
+            }
+        }
+    }
+}
+
+/// Percent-encode a path for a `/download/` or `/zip/` URL, segment by segment,
+/// so a `/` stays a separator and everything else is escaped.
+fn encode_remote_path(path: &str) -> String {
+    path.split('/')
+        .filter(|s| !s.is_empty())
+        .map(utils::url_encode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Join a relative path under `root` without letting it escape.
+///
+/// The names come from another machine's listing, so they are input: `..`, an
+/// absolute path or a drive letter must not be able to steer a write out of the
+/// downloads folder.
+fn safe_join(root: &std::path::Path, relative: &str) -> Result<PathBuf, String> {
+    let mut out = root.to_path_buf();
+    for segment in relative.split('/') {
+        let segment = segment.trim();
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        // Reject, never sanitize -- the same rule the serving side applies,
+        // used here because these names came off another machine's listing and
+        // are therefore input.
+        shares::check_segment(segment)
+            .map_err(|_| format!("refusing a suspicious name: {relative}"))?;
+        out.push(segment);
+    }
+    if out == root {
+        return Err("empty name".to_string());
+    }
+    Ok(out)
+}
+
+/// Where to reach a peer: the live beacon first, then whatever address they
+/// last contacted us from.
+fn resolve_peer_address(state: &AppState, peer: &Peer) -> Option<String> {
+    if let Ok(table) = state.discovered.lock() {
+        if let Some(found) = table.get(&peer.device_id) {
+            if let Some(address) = found.best_address() {
+                return Some(format!("{}:{}", address, found.port));
+            }
+        }
+    }
+    peer.last_address.clone()
+}
+
+/// Resolve a paired device to something we can dial. Every Network command
+/// starts here, so the blocked check cannot be forgotten in one of them.
+fn peer_endpoint(state: &AppState, device_id: &str) -> Result<(String, String), String> {
+    let registry = state
+        .peers
+        .read()
+        .map_err(|_| "peer state poisoned".to_string())?;
+    let peer = registry
+        .by_id(device_id)
+        .cloned()
+        .ok_or_else(|| "that device is not paired".to_string())?;
+    if peer.blocked {
+        return Err("that device is blocked".to_string());
+    }
+    let address = resolve_peer_address(state, &peer)
+        .ok_or_else(|| format!("{} is not reachable right now", peer.name))?;
+    Ok((peer.out_token, address))
 }
 
 /// Write the one-line `.m3u` used to hand a peer's URL to the default player.
@@ -2122,158 +2310,4 @@ fn write_play_playlist(app: &tauri::AppHandle, name: &str, url: &str) -> Result<
     std::fs::write(&file, format!("#EXTM3U\n#EXTINF:-1,{title}\n{url}\n"))
         .map_err(|e| format!("could not write the playlist: {e}"))?;
     Ok(file.display().to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Send to phone
-// ---------------------------------------------------------------------------
-
-/// Hand a set of files to a device that cannot run this app.
-///
-/// A phone cannot be a peer -- there is no Tauri binary for it -- so instead of
-/// a second mechanism this mints a short-lived share containing exactly the
-/// chosen files and returns a link plus a QR code. Everything downstream is the
-/// receiver UI that already exists: the phone browses, streams and downloads
-/// through the same code paths a normal share uses.
-#[tauri::command]
-pub(crate) fn create_handoff(
-    state: State<'_, AppState>,
-    paths: Vec<String>,
-    minutes: u64,
-) -> Result<HandoffView, String> {
-    if !server::is_running(&state) {
-        return Err("start the server first".to_string());
-    }
-    if paths.is_empty() {
-        return Err("pick at least one file".to_string());
-    }
-
-    // Every file must sit in one folder: the share is rooted at that folder and
-    // narrowed to these names. Files from two places would need two shares, and
-    // two links is not a thing to hand someone.
-    let mut parent: Option<PathBuf> = None;
-    let mut names: Vec<String> = Vec::new();
-    for raw in &paths {
-        let path = PathBuf::from(raw);
-        let meta = std::fs::metadata(&path).map_err(|_| format!("cannot read {raw}"))?;
-        if !meta.is_file() {
-            return Err("only files can be sent this way".to_string());
-        }
-        let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
-            return Err(format!("cannot work out where {raw} lives"));
-        };
-        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
-            return Err(format!("cannot read the name of {raw}"));
-        };
-        // The same validator every other path goes through.
-        shares::check_segment(&name).map_err(|e| e.message())?;
-
-        match &parent {
-            None => parent = Some(dir),
-            Some(existing) if *existing == dir => {}
-            Some(_) => {
-                return Err(
-                    "pick files from a single folder -- they are shared as one link".to_string(),
-                )
-            }
-        }
-        names.push(name);
-    }
-
-    let parent = parent.ok_or_else(|| "pick at least one file".to_string())?;
-    let root = shares::canonical_root(&parent.to_string_lossy()).map_err(|e| e.to_string())?;
-
-    let minutes = minutes.clamp(1, 24 * 60);
-    let expires_ms = utils::now_ms() + minutes * 60_000;
-    let token = auth::random_token();
-    let id = auth::random_id();
-    let label = if names.len() == 1 {
-        names[0].clone()
-    } else {
-        format!("{} files", names.len())
-    };
-
-    let share = crate::models::ResolvedShare {
-        cfg: Share {
-            id: id.clone(),
-            name: label.clone(),
-            path: shares::display_path(&root),
-            token: token.clone(),
-            enabled: true,
-            is_inbox: false,
-            read_only: true,
-            is_file: false,
-            // Only the top level: the chosen files are all in `root`, and a
-            // handoff has no business exposing subfolders.
-            recursive: false,
-            include_names: names.clone(),
-            include_ext: Vec::new(),
-            exclude_ext: Vec::new(),
-            added_ms: utils::now_ms(),
-            note: None,
-        },
-        root,
-        root_exists: true,
-        expires_ms: Some(expires_ms),
-    };
-
-    {
-        let mut registry = state
-            .shares
-            .write()
-            .map_err(|_| "share state poisoned".to_string())?;
-        registry.sweep_ephemeral(utils::now_ms());
-        registry.ephemeral.push(share);
-    }
-
-    let status = server::status_impl(&state);
-    let host = link_host().ok_or_else(|| "no network address to share from".to_string())?;
-    let url = format!("http://{}:{}/s/{}", host, status.port, token);
-    let svg = net::qr_svg(&url, 320).map_err(|e| e.to_string())?;
-
-    Ok(HandoffView {
-        id,
-        url,
-        svg,
-        label,
-        file_count: names.len(),
-        expires_ms,
-    })
-}
-
-#[tauri::command]
-pub(crate) fn revoke_handoff(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let mut registry = state
-        .shares
-        .write()
-        .map_err(|_| "share state poisoned".to_string())?;
-    registry.ephemeral.retain(|s| s.cfg.id != id);
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn list_handoffs(state: State<'_, AppState>) -> Vec<HandoffView> {
-    let status = server::status_impl(&state);
-    let host = link_host();
-    let Ok(mut registry) = state.shares.write() else {
-        return Vec::new();
-    };
-    registry.sweep_ephemeral(utils::now_ms());
-    registry
-        .ephemeral
-        .iter()
-        .map(|s| HandoffView {
-            id: s.cfg.id.clone(),
-            url: host
-                .as_ref()
-                .map(|h| format!("http://{}:{}/s/{}", h, status.port, s.cfg.token))
-                .unwrap_or_default(),
-            // The QR is regenerated on demand rather than stored -- it is a
-            // few hundred bytes of SVG derived entirely from the URL.
-            svg: String::new(),
-            label: s.cfg.name.clone(),
-            file_count: s.cfg.include_names.len(),
-            expires_ms: s.expires_ms.unwrap_or(0),
-        })
-        .collect()
 }

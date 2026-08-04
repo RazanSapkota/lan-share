@@ -9,7 +9,7 @@ use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use axum::{
-    extract::{ConnectInfo, Path as AxPath, State},
+    extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -22,11 +22,11 @@ use tokio::sync::watch;
 use crate::{
     auth,
     models::{
-        AppState, Offer, OfferState, OfferedFile, PairPromptView, PairState, Peer, PendingPair,
-        ServerCtx, OFFER_TTL_MS, PAIR_LOCKOUT_SECONDS, PAIR_MAX_ATTEMPTS, PAIR_TTL_MS,
+        AppState, PairPromptView, PairState, Peer, PendingPair, ServerCtx,
+        PAIR_LOCKOUT_SECONDS, PAIR_MAX_ATTEMPTS, PAIR_TTL_MS,
     },
-    shares, transfer,
-    utils::{format_bytes, now_ms},
+    shares,
+    utils::now_ms,
 };
 
 // ---------------------------------------------------------------------------
@@ -141,60 +141,35 @@ pub(crate) fn peer_by_bearer_any(ctx: &ServerCtx, headers: &HeaderMap) -> Option
     registry.by_in_token(token).cloned()
 }
 
-/// Resolve a bearer token to a usable peer, refusing blocked ones.
+// ---------------------------------------------------------------------------
+// Where downloads land
+// ---------------------------------------------------------------------------
+
+/// The folder a file pulled from another device is written to.
 ///
-/// Used by the peer routes here AND by the `AuthedSession` extractor, so the
-/// two can never disagree about who is allowed in.
-pub(crate) fn peer_from_headers(ctx: &ServerCtx, headers: &HeaderMap) -> Option<Peer> {
-    peer_by_bearer_any(ctx, headers).filter(|p| !p.blocked)
-}
-
-/// Note that we heard from a peer, so the desktop can show "last seen" without
-/// waiting for a beacon.
-fn touch_peer(ctx: &ServerCtx, peer_id: &str, address: &str) {
-    if let Ok(mut registry) = ctx.peers.write() {
-        if let Some(p) = registry.peers.iter_mut().find(|p| p.device_id == peer_id) {
-            p.last_seen_ms = now_ms();
-            p.last_address = Some(address.to_string());
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Receive folder
-// ---------------------------------------------------------------------------
-
-/// Where files sent by a peer land. Config first, then the OS Downloads folder.
-pub(crate) fn resolve_receive_dir(app: &tauri::AppHandle, state: &AppState) -> Result<PathBuf> {
+/// Not configurable, and no longer a "receive folder": nothing arrives here
+/// unasked, so there is nothing to choose a destination for in advance. It is
+/// canonicalized because it is the containment root every downloaded name is
+/// checked against -- the same treatment a share root gets.
+pub(crate) fn downloads_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     use tauri::Manager;
 
-    let configured = crate::config::load_config_impl(app).receive_dir;
-    let dir = match configured.filter(|p| !p.trim().is_empty()) {
-        Some(path) => PathBuf::from(path),
-        None => app
-            .path()
-            .download_dir()
-            .unwrap_or_else(|_| std::env::temp_dir())
-            .join("LAN Share"),
-    };
+    let dir = app
+        .path()
+        .download_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("LAN Share");
 
     std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create the receive folder {}", dir.display()))?;
-    // Canonical, because it is the containment root for every inbound
-    // filename -- the same treatment a share root gets.
-    let dir = shares::canonical_root(&dir.to_string_lossy())?;
-
-    if let Ok(mut slot) = state.receive_dir.lock() {
-        *slot = Some(dir.clone());
-    }
-    Ok(dir)
+        .with_context(|| format!("failed to create the downloads folder {}", dir.display()))?;
+    shares::canonical_root(&dir.to_string_lossy())
 }
 
 // ---------------------------------------------------------------------------
 // Housekeeping
 // ---------------------------------------------------------------------------
 
-/// Expire stale discovery rows, abandoned pair prompts and dead offers.
+/// Expire stale discovery rows and abandoned pair prompts.
 pub(crate) async fn sweep_loop(ctx: ServerCtx, mut shutdown: watch::Receiver<bool>) {
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -203,8 +178,6 @@ pub(crate) async fn sweep_loop(ctx: ServerCtx, mut shutdown: watch::Receiver<boo
             _ = tick.tick() => {
                 crate::discovery::sweep(&ctx);
                 sweep_pairs(&ctx);
-                sweep_offers(&ctx);
-                transfer::sweep_transfers(&ctx);
             }
             _ = shutdown.wait_for(|stop| *stop) => break,
         }
@@ -215,13 +188,6 @@ fn sweep_pairs(ctx: &ServerCtx) {
     if let Ok(mut pending) = ctx.pending_pairs.lock() {
         let now = now_ms();
         pending.retain(|_, p| p.expires_ms > now);
-    }
-}
-
-fn sweep_offers(ctx: &ServerCtx) {
-    if let Ok(mut offers) = ctx.offers.lock() {
-        let now = now_ms();
-        offers.retain(|_, o| now.saturating_sub(o.created_ms) <= OFFER_TTL_MS);
     }
 }
 
@@ -578,7 +544,6 @@ pub(crate) async fn pair_poll(
 // each of these operations is written once against the map and given two thin
 // wrappers. Two copies of a state machine drift; two field accessors cannot.
 type PendingMap = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, PendingPair>>>;
-type OfferMap = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Offer>>>;
 
 pub(crate) fn list_prompts(state: &AppState) -> Vec<PairPromptView> {
     list_prompts_in(&state.pending_pairs)
@@ -656,7 +621,6 @@ fn accept_prompt_in(pending: &PendingMap, pair_id: &str) -> Result<Peer> {
         added_ms: now_ms(),
         last_seen_ms: now_ms(),
         last_address: Some(format!("{}:{}", entry.from_ip, entry.from_port)),
-        auto_accept: false,
         blocked: false,
         note: None,
     })
@@ -683,234 +647,4 @@ fn decline_prompt_in(pending: &PendingMap, pair_id: &str) -> Result<()> {
     entry.state = PairState::Declined;
     entry.issued_in_token = None;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// POST /api/peer/offer
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct OfferBody {
-    #[serde(default)]
-    pub(crate) files: Vec<OfferedFile>,
-}
-
-pub(crate) async fn offer(
-    State(ctx): State<ServerCtx>,
-    ConnectInfo(peer_addr): ConnectInfo<std::net::SocketAddr>,
-    headers: HeaderMap,
-    Json(body): Json<OfferBody>,
-) -> Response {
-    let Some(peer) = peer_from_headers(&ctx, &headers) else {
-        return peer_404();
-    };
-    touch_peer(&ctx, &peer.device_id, &peer_addr.ip().to_string());
-
-    let (max_files, max_bytes) = ctx
-        .settings
-        .read()
-        .map(|s| (s.max_offer_files, s.max_offer_bytes))
-        .unwrap_or((500, u64::MAX));
-
-    if body.files.is_empty() || body.files.len() > max_files {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "bad_offer" })),
-        )
-            .into_response();
-    }
-
-    // Validate EVERY filename before creating the offer. A rejected name fails
-    // the whole batch, so the human is never shown a prompt whose contents
-    // differ from what would actually land on disk.
-    for file in &body.files {
-        if shares::check_segment(&file.name).is_err() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "bad_filename" })),
-            )
-                .into_response();
-        }
-    }
-
-    let total_bytes: u64 = body.files.iter().map(|f| f.size).sum();
-    if total_bytes > max_bytes {
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(json!({ "error": "too_large" })),
-        )
-            .into_response();
-    }
-
-    // One live offer per peer: a queue of prompts from one device is a way to
-    // wear the user down into clicking Accept.
-    {
-        let Ok(offers) = ctx.offers.lock() else {
-            return peer_404();
-        };
-        if offers
-            .values()
-            .any(|o| o.peer_id == peer.device_id && o.state == OfferState::Pending)
-        {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({ "error": "offer_in_progress" })),
-            )
-                .into_response();
-        }
-    }
-
-    let offer_id = auth::random_token();
-    let transfer_id = transfer::begin(
-        &ctx,
-        "in",
-        &peer.device_id,
-        &peer.name,
-        body.files.len(),
-        total_bytes,
-    );
-
-    // Auto-accept is a per-peer decision the user made once, in advance.
-    let auto = peer.auto_accept;
-    let state = if auto {
-        OfferState::Accepted
-    } else {
-        OfferState::Pending
-    };
-
-    if let Ok(mut offers) = ctx.offers.lock() {
-        offers.insert(
-            offer_id.clone(),
-            Offer {
-                offer_id: offer_id.clone(),
-                peer_id: peer.device_id.clone(),
-                peer_name: peer.name.clone(),
-                files: body.files.clone(),
-                total_bytes,
-                state,
-                created_ms: now_ms(),
-                received: Vec::new(),
-                transfer_id,
-            },
-        );
-    }
-
-    ctx.log_event(
-        "offer",
-        if auto { "ok" } else { "started" },
-        &peer_addr.ip().to_string(),
-        &format!("peer:{}", peer.name),
-        None,
-        Some(format!(
-            "{} file(s), {}",
-            body.files.len(),
-            format_bytes(total_bytes)
-        )),
-        None,
-    );
-
-    Json(json!({
-        "offerId": offer_id,
-        "state": if auto { "accepted" } else { "pending" },
-    }))
-    .into_response()
-}
-
-/// The sender polls this until the user answers.
-pub(crate) async fn offer_status(
-    State(ctx): State<ServerCtx>,
-    headers: HeaderMap,
-    AxPath(offer_id): AxPath<String>,
-) -> Response {
-    let Some(peer) = peer_from_headers(&ctx, &headers) else {
-        return peer_404();
-    };
-    let Ok(offers) = ctx.offers.lock() else {
-        return peer_404();
-    };
-    let Some(offer) = offers.get(&offer_id) else {
-        return peer_404();
-    };
-    // A peer may only see its own offers.
-    if offer.peer_id != peer.device_id {
-        return peer_404();
-    }
-    Json(json!({
-        "state": match offer.state {
-            OfferState::Pending => "pending",
-            OfferState::Accepted => "accepted",
-            OfferState::Declined => "declined",
-        }
-    }))
-    .into_response()
-}
-
-pub(crate) fn list_offers(state: &AppState) -> Vec<crate::models::OfferView> {
-    list_offers_in(&state.offers)
-}
-
-#[cfg(test)]
-pub(crate) fn list_offers_ctx(ctx: &ServerCtx) -> Vec<crate::models::OfferView> {
-    list_offers_in(&ctx.offers)
-}
-
-fn list_offers_in(offers: &OfferMap) -> Vec<crate::models::OfferView> {
-    let Ok(offers) = offers.lock() else {
-        return Vec::new();
-    };
-    let mut out: Vec<crate::models::OfferView> = offers
-        .values()
-        .filter(|o| o.state == OfferState::Pending)
-        .map(|o| {
-            const PREVIEW: usize = 50;
-            crate::models::OfferView {
-                offer_id: o.offer_id.clone(),
-                peer_id: o.peer_id.clone(),
-                peer_name: o.peer_name.clone(),
-                file_count: o.files.len(),
-                total_bytes: o.total_bytes,
-                total_bytes_text: format_bytes(o.total_bytes),
-                // A 500-file offer must not ship 500 rows to the UI.
-                files: o.files.iter().take(PREVIEW).cloned().collect(),
-                truncated: o.files.len() > PREVIEW,
-            }
-        })
-        .collect();
-    out.sort_by_key(|o| o.offer_id.clone());
-    out
-}
-
-pub(crate) fn set_offer_state(state: &AppState, offer_id: &str, accept: bool) -> Result<String> {
-    let (peer_id, transfer_id) = set_offer_state_in(&state.offers, offer_id, accept)?;
-    if !accept {
-        transfer::finish(state, transfer_id, "declined", None);
-    }
-    Ok(peer_id)
-}
-
-#[cfg(test)]
-pub(crate) fn set_offer_state_ctx(ctx: &ServerCtx, offer_id: &str, accept: bool) -> Result<String> {
-    let (peer_id, transfer_id) = set_offer_state_in(&ctx.offers, offer_id, accept)?;
-    if !accept {
-        transfer::finish_ctx(ctx, transfer_id, "declined", None);
-    }
-    Ok(peer_id)
-}
-
-fn set_offer_state_in(offers: &OfferMap, offer_id: &str, accept: bool) -> Result<(String, u64)> {
-    let Ok(mut offers) = offers.lock() else {
-        return Err(anyhow!("offer state poisoned"));
-    };
-    let offer = offers
-        .get_mut(offer_id)
-        .ok_or_else(|| anyhow!("that transfer request has expired"))?;
-    if offer.state != OfferState::Pending {
-        return Err(anyhow!("that transfer request was already answered"));
-    }
-    offer.state = if accept {
-        OfferState::Accepted
-    } else {
-        OfferState::Declined
-    };
-    Ok((offer.peer_id.clone(), offer.transfer_id))
 }
