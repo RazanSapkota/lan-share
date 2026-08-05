@@ -449,6 +449,25 @@ impl FromRequestParts<ServerCtx> for AuthedSession {
                 return Err(unauthorized());
             }
             let now = now_ms();
+
+            // They are demonstrably here, on a path that does not care whether
+            // the UDP beacon arrives. `list_peers` folds this in, which is what
+            // makes presence work on a network that blocks broadcast.
+            //
+            // Here rather than in `peer_by_bearer_any`: that one is a resolver,
+            // documented as returning blocked peers on purpose so this branch
+            // can tell "blocked" from "not a peer token at all", and it has
+            // exactly one caller -- so making it write would contradict its own
+            // name and buy no coverage.
+            //
+            // After the refusal above, so a blocked peer is never stamped. It
+            // gains nothing (the row says "Disconnected" and the Devices page
+            // filters it out) and a "seen just now" on a blocked row reads as
+            // the block not working.
+            if let Ok(mut seen) = ctx.peer_seen.lock() {
+                seen.insert(peer.device_id.clone(), now);
+            }
+
             let label = format!("peer:{}", peer.name);
             return Ok(AuthedSession {
                 session: Session {

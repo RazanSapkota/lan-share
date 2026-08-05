@@ -52,6 +52,11 @@ The three buttons map onto Wi-Fi's, because the states really are the same ones:
 but keeps the connection so reconnecting needs no code, and **Forget** throws it
 away so both sides start over. Underneath they are still pair, block and unpair.
 
+Disconnect only appears while the device is actually reachable — there is no
+traffic to stop on one that is asleep, and the row says **Offline** rather than
+offering an action that would do nothing. Forget stays either way: wanting a
+device out of your list does not depend on it being awake.
+
 **Nothing pushes.** A device cannot send you a file, only offer one for you to
 come and take. That is a smaller protocol and a much smaller question — there is
 no prompt to accept, no folder to nominate in advance, and no way for a connected
@@ -65,7 +70,7 @@ browser flow: open the address, type the PIN, browse and download.
 ```sh
 npm run tauri:dev      # cargo run --manifest-path src-tauri/Cargo.toml
 npm run tauri:build    # release build
-npm test               # cargo test  (158 tests)
+npm test               # cargo test  (166 tests)
 ```
 
 There is no frontend build step — `ui/` is served straight from disk by Tauri,
