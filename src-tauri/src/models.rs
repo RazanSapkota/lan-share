@@ -667,6 +667,8 @@ pub(crate) struct ServerCtx {
     // --- peers ---
     pub(crate) peers: Arc<RwLock<PeerRegistry>>,
     pub(crate) discovered: Arc<Mutex<HashMap<String, DiscoveredPeer>>>,
+    /// See the field of the same name on `AppState`.
+    pub(crate) peer_seen: Arc<Mutex<HashMap<String, u64>>>,
     pub(crate) pending_pairs: Arc<Mutex<HashMap<String, PendingPair>>>,
     pub(crate) pair_attempts: Arc<Mutex<HashMap<IpAddr, AttemptState>>>,
     /// Our own identity, so handlers can answer `/api/peer/hello` and the
@@ -1074,9 +1076,25 @@ pub(crate) struct AppState {
     /// Paired devices, token-indexed. Rebuilt on every config mutation, so
     /// unpairing takes effect on the next request with no restart.
     pub(crate) peers: Arc<RwLock<PeerRegistry>>,
-    /// Heard on the LAN. Cleared when the server stops -- presence is not a
-    /// fact that outlives the socket.
+    /// Heard on the LAN, from the UDP beacon.
     pub(crate) discovered: Arc<Mutex<HashMap<String, DiscoveredPeer>>>,
+    /// Epoch-ms of the last DIRECT, AUTHENTICATED contact with a paired device,
+    /// in either direction -- them authenticating to us, or us reaching them.
+    /// Not beacons: `discovered` is the beacon table, and the point of this one
+    /// is presence on a network where the broadcast never arrives.
+    ///
+    /// In memory, and deliberately not persisted. The obvious alternative is to
+    /// write `Peer.last_seen_ms`, but a `Peer` lives in the config file, so the
+    /// only way to update one is `mutate_config` -- a disk write plus a full
+    /// `apply_config_to_state` registry rebuild, PER INBOUND REQUEST. This map
+    /// exists to not do that.
+    ///
+    /// LEAF LOCK. Never acquire another lock while holding it. `discovery.rs`
+    /// takes it under `discovered`, and that is the only nesting there is.
+    ///
+    /// Needs no cap, unlike `discovered`: a key appears only when a bearer
+    /// token matched a real `Peer`, so the map is bounded by the peer list.
+    pub(crate) peer_seen: Arc<Mutex<HashMap<String, u64>>>,
     pub(crate) pending_pairs: Arc<Mutex<HashMap<String, PendingPair>>>,
     pub(crate) pair_attempts: Arc<Mutex<HashMap<IpAddr, AttemptState>>>,
     pub(crate) discovery_self_seen_ms: Arc<AtomicU64>,
@@ -1114,6 +1132,7 @@ impl AppState {
             thumb_dir: Arc::new(Mutex::new(None)),
             peers: Arc::new(RwLock::new(PeerRegistry::default())),
             discovered: Arc::new(Mutex::new(HashMap::new())),
+            peer_seen: Arc::new(Mutex::new(HashMap::new())),
             pending_pairs: Arc::new(Mutex::new(HashMap::new())),
             pair_attempts: Arc::new(Mutex::new(HashMap::new())),
             discovery_self_seen_ms: Arc::new(AtomicU64::new(0)),

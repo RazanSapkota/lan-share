@@ -16,7 +16,6 @@ package-lock.json
 .env.*.local
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -33,3 +32,7 @@ desktop.ini
 # NOTE: Cargo.lock is deliberately NOT ignored. This crate builds a binary, so
 # the lockfile belongs in version control — it is what makes a build
 # reproducible.
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore

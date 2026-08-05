@@ -231,6 +231,7 @@ pub(crate) fn start_server_impl(app: &tauri::AppHandle, state: &AppState) -> Res
         thumb_dir,
         peers: Arc::clone(&state.peers),
         discovered: Arc::clone(&state.discovered),
+        peer_seen: Arc::clone(&state.peer_seen),
         pending_pairs: Arc::clone(&state.pending_pairs),
         pair_attempts: Arc::clone(&state.pair_attempts),
         device_id,

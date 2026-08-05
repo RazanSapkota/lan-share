@@ -1536,10 +1536,30 @@ pub(crate) fn decline_pair_request(
 // Peers: the friends list
 // ---------------------------------------------------------------------------
 
+/// When a peer was last known to be there, out of the three things that can
+/// know it: its UDP beacon, the last direct authenticated contact either way,
+/// and -- as a floor -- the moment it was paired.
+///
+/// The latest wins. Each is sufficient on its own and each has a blind spot:
+/// the beacon does not survive a network that drops broadcast, contact says
+/// nothing about a device sitting idle, and the pairing time is only ever a
+/// starting point.
+///
+/// Pure and argument-taking, for the same reason `discovery::health_from` is:
+/// `list_peers` needs it behind a `State` that a unit test cannot build, and a
+/// rule that can only be exercised through a Tauri command is a rule that gets
+/// tested by hand or not at all.
+pub(crate) fn peer_seen_ms(beacon_ms: Option<u64>, contact_ms: Option<u64>, paired_ms: u64) -> u64 {
+    paired_ms
+        .max(beacon_ms.unwrap_or(0))
+        .max(contact_ms.unwrap_or(0))
+}
+
 #[tauri::command]
 pub(crate) fn list_peers(state: State<'_, AppState>) -> Vec<PeerView> {
     let now = utils::now_ms();
     let discovered = state.discovered.lock().ok();
+    let contacted = state.peer_seen.lock().ok();
 
     state
         .peers
@@ -1549,14 +1569,17 @@ pub(crate) fn list_peers(state: State<'_, AppState>) -> Vec<PeerView> {
                 .peers
                 .iter()
                 .map(|p| {
-                    // Presence comes from the beacon table when we have it, and
-                    // falls back to the last time they talked to us -- so a
-                    // device on a broadcast-blocked network still shows online
-                    // after a successful transfer.
+                    // Beacon, last direct contact, pairing time -- latest wins.
+                    // The contact half is what makes a device on a network that
+                    // blocks broadcast read online after it talks to us, which
+                    // this comment claimed long before anything wrote the
+                    // timestamp it was claiming to read.
                     let found = discovered.as_ref().and_then(|t| t.get(&p.device_id));
-                    let seen = found
-                        .map(|d| d.last_seen_ms.max(p.last_seen_ms))
-                        .unwrap_or(p.last_seen_ms);
+                    let seen = peer_seen_ms(
+                        found.map(|d| d.last_seen_ms),
+                        contacted.as_ref().and_then(|t| t.get(&p.device_id)).copied(),
+                        p.last_seen_ms,
+                    );
                     let address = found
                         .and_then(|d| d.best_address().map(|a| format!("{}:{}", a, d.port)))
                         .or_else(|| p.last_address.clone());
@@ -1659,9 +1682,12 @@ pub(crate) async fn peer_browse(
         None => "/api/shares".to_string(),
     };
 
-    crate::peerclient::get_authed(&address, &route, &token)
+    let answered = crate::peerclient::get_authed(&address, &route, &token)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    note_peer_seen(&state, &device_id);
+    Ok(answered)
 }
 
 /// Play a file that lives on a paired device, without downloading it first.
@@ -2236,6 +2262,25 @@ fn resolve_peer_address(state: &AppState, peer: &Peer) -> Option<String> {
         }
     }
     peer.last_address.clone()
+}
+
+/// Record that we just reached a device, for `list_peers` to fold into presence.
+///
+/// Called on OUTBOUND success, where `auth.rs` records the inbound half. The
+/// inbound stamp alone only fixes the view of whoever is being browsed; this is
+/// the side that matters for the chicken-and-egg, because the desktop refuses
+/// to call `peer_browse` at all on a device the peer list says is offline. With
+/// no beacon and no outbound stamp, a reachable device stays unbrowsable
+/// because it is unbrowsable.
+///
+/// `peer_browse` only. The thumbnail and download paths reach the same device
+/// and could stamp too, but they are reachable only from a listing that
+/// `peer_browse` just fetched, so they would be re-stamping a device stamped
+/// milliseconds ago. Browsing is the coarse heartbeat; the rest is noise.
+fn note_peer_seen(state: &AppState, device_id: &str) {
+    if let Ok(mut seen) = state.peer_seen.lock() {
+        seen.insert(device_id.to_string(), utils::now_ms());
+    }
 }
 
 /// Resolve a paired device to something we can dial. Every Network command

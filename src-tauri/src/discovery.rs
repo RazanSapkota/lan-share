@@ -446,6 +446,17 @@ pub(crate) fn apply_beacon(ctx: &ServerCtx, beacon: &Beacon, from: IpAddr) {
         if let Some(entry) = table.get_mut(&beacon.device_id) {
             entry.last_seen_ms = now.saturating_sub(crate::models::PEER_OFFLINE_AFTER_MS + 1);
         }
+        // And drop the contact stamp, or back-dating the beacon achieves
+        // nothing: `list_peers` takes the LATER of the two, so a peer that
+        // browsed us three seconds before shutting down cleanly would read
+        // "Connected" for another twenty seconds -- the exact staleness the
+        // goodbye exists to prevent.
+        //
+        // `peer_seen` is a leaf lock and `discovered` is held here; this is the
+        // one place two of them are held at once, and it nests that way only.
+        if let Ok(mut seen) = ctx.peer_seen.lock() {
+            seen.remove(&beacon.device_id);
+        }
         return;
     }
 

@@ -1454,6 +1454,7 @@ fn fixture_with(opts: FixtureOpts) -> HttpFixture {
         thumb_dir: base.join("thumbs"),
         peers: Arc::new(RwLock::new(crate::models::PeerRegistry { peers: opts.peers })),
         discovered: Arc::new(Mutex::new(HashMap::new())),
+        peer_seen: Arc::new(Mutex::new(HashMap::new())),
         pending_pairs: Arc::new(Mutex::new(HashMap::new())),
         pair_attempts: Arc::new(Mutex::new(HashMap::new())),
         device_id: Arc::new("hostdevice1".to_string()),
@@ -3089,6 +3090,131 @@ fn peer_fixture() -> (HttpFixture, &'static str) {
         ..Default::default()
     });
     (fx, token)
+}
+
+// ===========================================================================
+// Presence: last direct contact
+//
+// `Peer.last_seen_ms` is written once, at pairing, and lives in the config
+// file -- so it cannot be the thing a request updates without a disk write per
+// request. `ctx.peer_seen` is the in-memory answer, and these are the four
+// paths into and out of it.
+// ===========================================================================
+
+#[test]
+fn an_authenticated_peer_request_marks_it_seen() {
+    let (fx, token) = peer_fixture();
+    let before = crate::utils::now_ms();
+
+    let (status, _, _) = fx.get_as_peer("/api/shares", token);
+    assert_eq!(status, StatusCode::OK);
+
+    let seen = fx.ctx.peer_seen.lock().unwrap();
+    let stamp = *seen
+        .get("dev1")
+        .expect("a peer that just authenticated was not marked seen");
+    assert!(
+        stamp >= before,
+        "the stamp is older than the request that should have written it"
+    );
+}
+
+/// The peer list is what a request updates, not the reachability of the device
+/// behind it -- so a device you have disconnected from must not come back to
+/// life by knocking on the door.
+#[test]
+fn a_blocked_peer_is_not_marked_seen() {
+    let token = "INTOKENINTOKENINTOKENINT01";
+    let mut peer = test_peer("dev1", token);
+    peer.blocked = true;
+    let fx = fixture_with(FixtureOpts {
+        peers: vec![peer],
+        ..Default::default()
+    });
+
+    let (status, _, _) = fx.get_as_peer("/api/shares", token);
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a blocked peer got in");
+    assert!(
+        fx.ctx.peer_seen.lock().unwrap().is_empty(),
+        "a refused device was still recorded as present"
+    );
+}
+
+#[test]
+fn peering_off_does_not_mark_seen() {
+    let token = "INTOKENINTOKENINTOKENINT01";
+    let fx = fixture_with(FixtureOpts {
+        peers: vec![test_peer("dev1", token)],
+        peering_enabled: false,
+        ..Default::default()
+    });
+
+    fx.get_as_peer("/api/shares", token);
+    assert!(
+        fx.ctx.peer_seen.lock().unwrap().is_empty(),
+        "peering is off, so nothing should be resolving peer tokens at all"
+    );
+}
+
+/// Guards the choke point. The stamp lives on the peer branch of the extractor,
+/// and a browser session must not walk into it.
+#[test]
+fn a_session_request_does_not_mark_any_peer_seen() {
+    let (fx, _token) = peer_fixture();
+    let session = fx.login("123456");
+
+    let (status, _, _) = fx.get("/api/shares", Some(&session));
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        fx.ctx.peer_seen.lock().unwrap().is_empty(),
+        "a browser session was recorded as a peer contact"
+    );
+}
+
+/// A goodbye back-dates the beacon, but `list_peers` takes the LATER of beacon
+/// and contact -- so without dropping the stamp too, a device that browsed us
+/// and then shut down cleanly reads "Connected" for another twenty seconds.
+#[test]
+fn a_goodbye_beacon_clears_the_contact_stamp() {
+    let fx = http_fixture("123456");
+    let mut b = beacon("Leaving");
+    crate::discovery::apply_beacon(&fx.ctx, &b, "192.168.1.5".parse().unwrap());
+    fx.ctx
+        .peer_seen
+        .lock()
+        .unwrap()
+        .insert("abc123".to_string(), crate::utils::now_ms());
+
+    b.alive = false;
+    crate::discovery::apply_beacon(&fx.ctx, &b, "192.168.1.5".parse().unwrap());
+
+    assert!(
+        !fx.ctx.peer_seen.lock().unwrap().contains_key("abc123"),
+        "the goodbye left a fresh contact stamp behind to contradict it"
+    );
+    assert_eq!(
+        fx.ctx.discovered.lock().unwrap().len(),
+        1,
+        "the row itself should survive the goodbye"
+    );
+}
+
+/// The rule `list_peers` applies, without a `State` to build.
+#[test]
+fn presence_folds_the_beacon_and_the_last_contact() {
+    use crate::tasks::peer_seen_ms;
+    let paired = 1_000u64;
+    let recent = 9_000u64;
+
+    // Either source alone is enough.
+    assert_eq!(peer_seen_ms(Some(recent), None, paired), recent);
+    assert_eq!(peer_seen_ms(None, Some(recent), paired), recent);
+    // The later one wins, whichever it is.
+    assert_eq!(peer_seen_ms(Some(recent), Some(2_000), paired), recent);
+    assert_eq!(peer_seen_ms(Some(2_000), Some(recent), paired), recent);
+    // With neither, the pairing time is the floor -- never zero, which would
+    // read as 1970 and print an absurd "seen 56 years ago".
+    assert_eq!(peer_seen_ms(None, None, paired), paired);
 }
 
 // ===========================================================================

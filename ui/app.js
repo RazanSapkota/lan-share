@@ -1520,10 +1520,48 @@ async function refreshDevices() {
     callQuiet("list_peers"),
   ]);
   if (discovery) state.devices.discovery = discovery;
-  if (Array.isArray(peers)) state.devices.peers = peers;
+  if (Array.isArray(peers)) setPeers(peers);
 
   renderNetworkList();
   renderDiscoveryNotice();
+}
+
+/// A device has to be gone this long before coming back is worth saying out
+/// loud. Presence is 5s beacons against a 20s threshold, so ONE lost burst
+/// reads as a departure and the next beacon as an arrival -- without this, a
+/// marginal link announces itself every twenty-five seconds forever.
+const AWAY_BEFORE_TOAST_MS = 60_000;
+
+/// The only writer of `state.devices.peers`, and the arrival toast lives here
+/// for that reason. Three pollers feed this list -- the Connections tick, the
+/// Devices tick, and the watch tick below -- and a toast that only saw one of
+/// them would be comparing against a snapshot minutes old.
+///
+/// The previous list IS the previous snapshot. A separate map of who was online
+/// would need an eviction policy, and would get every edge case wrong that this
+/// gets right for free: a device unpaired and paired again is simply absent
+/// from `before`, so it is not an arrival; one that drops out of `list_peers`
+/// takes its own history with it; and on boot `before` is empty, so a room full
+/// of online devices announces nothing.
+function setPeers(peers) {
+  const before = new Map(state.devices.peers.map((p) => [p.device_id, p]));
+  const now = Date.now();
+
+  for (const p of peers) {
+    const was = before.get(p.device_id);
+    // No prior row is app start or a fresh pairing. Neither is an arrival --
+    // and pairing already says "Connected to X" on its own.
+    if (!was || was.online || !p.online) continue;
+    // Blocked at either end is not an arrival. The row reads "Disconnected",
+    // and the user is the one who disconnected it.
+    if (was.blocked || p.blocked) continue;
+    if (now - was.last_seen_ms <= AWAY_BEFORE_TOAST_MS) continue;
+    // "is online", not "connected": pairing owns that word, and this is the
+    // opposite of the "Offline" the row was showing a moment ago.
+    showToast(p.name + " is online", "success");
+  }
+
+  state.devices.peers = peers;
 }
 
 /// Runs on every page, forever. A pairing request is another human waiting on
@@ -1533,6 +1571,21 @@ function startWatchTick() {
     const requests = await callQuiet("list_incoming_pair_requests");
     if (Array.isArray(requests)) showIncomingPair(requests);
     updateDevicesBadge(Array.isArray(requests) ? requests.length : 0);
+
+    // A device coming back is the second thing worth noticing from any page.
+    // Fetched here only when neither page poller owns presence -- they run
+    // faster and re-render besides. `enterNetwork` awaits `list_peers` before
+    // starting its timer, so both flags read null for a moment during a page
+    // switch and this can fetch twice; harmless, because `setPeers` announces
+    // a rising edge and the second pass has none left to find.
+    //
+    // State only, never a render: `renderNetworkList` swaps `innerHTML`
+    // wholesale every 1500ms and takes any open tooltip with it. A second
+    // render path would double that for no gain.
+    if (!state.devices.tickTimer && !state.network.tickTimer) {
+      const peers = await callQuiet("list_peers");
+      if (Array.isArray(peers)) setPeers(peers);
+    }
   }, WATCH_TICK_MS);
 }
 
@@ -1617,7 +1670,14 @@ function networkRows() {
   );
 }
 
-/// What the row says about itself, in the same words as its buttons.
+/// What the row says about itself, in the same words as its buttons -- with one
+/// deliberate exception. "Offline" names a state with no button, because the
+/// only honest action on a device that is not there is to wait for it.
+///
+/// "Disconnected" is kept for a blocked device even though it now sits beside
+/// "Offline" and the two are both negatives. It anchors to the Disconnect verb
+/// and the Reconnect button that undoes it; renaming it "Blocked" would surface
+/// the underlying name, which is exactly what the README says not to do.
 function networkStatusHtml(row) {
   const chip = (cls, text) =>
     `<span class="share-status ${cls}"><span class="share-status-dot"></span>${text}</span>`;
@@ -1628,7 +1688,10 @@ function networkStatusHtml(row) {
     case "connected":
       return chip("is-live", "Connected");
     case "saved":
-      return chip("is-off", "Connected") + seen("asleep, seen");
+      // Not "Connected" in grey: a device that is not there is not connected to
+      // anything, and the colour is the only thing that said so. "asleep" went
+      // with it -- asleep IS offline, so the two together read as two facts.
+      return chip("is-off", "Offline") + seen("seen");
     case "available":
       return chip("is-live", "Available");
     case "away":
@@ -1655,14 +1718,27 @@ function networkActionsHtml(row, id) {
       </span>`;
   }
 
-  if (row.state === "connected" || row.state === "saved") {
+  const rename = `<button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
+                data-tip="Rename this device in your list. Only you see the new name.">
+          <span class="material-symbols-outlined">edit</span>
+        </button>`;
+
+  if (row.state === "connected") {
     return `<span class="device-actions">
         <button class="ghost-button" type="button" data-dev="block" data-id="${id}"
                 data-tip="Stop traffic in both directions. The connection is kept, so reconnecting is one click and no code.">Disconnect</button>
-        <button class="icon-button" type="button" data-dev="rename" data-id="${id}" aria-label="Rename"
-                data-tip="Rename this device in your list. Only you see the new name.">
-          <span class="material-symbols-outlined">edit</span>
-        </button>
+        ${rename}
+        ${forget}
+      </span>`;
+  }
+
+  // Paired, but not there. Disconnect is gone rather than disabled: there is no
+  // traffic to stop, and the row already says Offline. Forget stays, because
+  // wanting a device out of the list is not conditional on it being awake --
+  // and Reconnect above stays offered offline for the same reason.
+  if (row.state === "saved") {
+    return `<span class="device-actions">
+        ${rename}
         ${forget}
       </span>`;
   }
@@ -2064,7 +2140,7 @@ state.network = {
 
 async function enterNetwork() {
   const peers = await callQuiet("list_peers");
-  if (Array.isArray(peers)) state.devices.peers = peers;
+  if (Array.isArray(peers)) setPeers(peers);
 
   reconcileNetDevice();
   renderNetDevices();
@@ -2142,7 +2218,7 @@ function stopNetworkTick() {
 async function refreshNetPresence() {
   const peers = await callQuiet("list_peers");
   if (!Array.isArray(peers)) return;
-  state.devices.peers = peers;
+  setPeers(peers);
 
   const moved = reconcileNetDevice();
   renderNetDevices();
