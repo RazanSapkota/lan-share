@@ -110,9 +110,18 @@ crc32fast = "1"
 zip = { version = "2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-# SetThreadExecutionState: stop the laptop suspending mid-transfer. Already in
-# the tree via tao/wry, so this pulls in no new compile.
-windows = { version = "0.61", features = ["Win32_System_Power", "Win32_Foundation"] }
+# SetThreadExecutionState: stop the laptop suspending mid-transfer.
+# WindowsAndMessaging + HiDpi + LibraryLoader: load the app icon at the size the
+# shell is about to draw it in, rather than letting it magnify one 16px bitmap.
+# See `use_native_size_icons` in src/main.rs. All already in the tree via
+# tao/wry, so this pulls in no new compile.
+windows = { version = "0.61", features = [
+    "Win32_System_Power",
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.dev]
 incremental = true

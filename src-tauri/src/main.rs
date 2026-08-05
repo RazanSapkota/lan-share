@@ -68,6 +68,11 @@ fn main() {
                 let _ = server::start_server_impl(&app.handle(), &state);
             }
 
+            #[cfg(windows)]
+            for window in app.webview_windows().values() {
+                use_native_size_icons(window);
+            }
+
             app.manage(state);
             Ok(())
         })
@@ -160,4 +165,107 @@ fn main() {
                 }
             }
         });
+}
+
+// ---------------------------------------------------------------------------
+// Window icon (Windows)
+// ---------------------------------------------------------------------------
+
+/// Hand the shell the icon at the size it is about to draw, instead of one
+/// bitmap for every size.
+///
+/// Tauri's `default_window_icon` is produced by `tauri-codegen`, which opens
+/// `icon.ico` and takes `entries()[0]` -- the FIRST entry in the directory, not
+/// the best one, not the biggest. Ours is written smallest-first, so that is the
+/// 16px image, and tao then installs it as both ICON_SMALL and ICON_BIG. Every
+/// surface that wants more than 16 device pixels -- the taskbar button, Alt-Tab,
+/// Task View -- gets it magnified.
+///
+/// That is both halves of the bug report. It is blurry because 16 -> 24 is an
+/// upscale, and it does not match the icon Explorer draws because the 16px tier
+/// deliberately carries no nodes and no wires (see `tools/make-icons.mjs`): what
+/// was being magnified was the stripped-down glyph, not the mark.
+///
+/// The ladder is already in the executable -- `tauri-build` links `icon.ico` as
+/// resource 32512 -- so the fix is to ask for it BY SIZE. Given an explicit
+/// cx/cy, `LoadImageW` runs the shell's own best-match over the directory, and
+/// the two metrics it is asked for land on entries that were drawn at exactly
+/// that size:
+///
+///   SM_CXSMICON   16 / 20 / 24 / 32     at 100 / 125 / 150 / 200% DPI
+///   SM_CXICON     32 / 40 / 48 / 64     at the same four
+///
+/// which is why 20 and 40 are in the ladder at all.
+///
+/// `GetSystemMetricsForDpi` rather than `GetSystemMetrics`: the process is
+/// per-monitor DPI aware, so the un-suffixed call answers for the primary
+/// monitor and would pick the wrong entry everywhere else. It is read once, at
+/// startup, from the window's own monitor -- not refreshed on a DPI change,
+/// because the surface that matters most is the taskbar, and the taskbar scales
+/// to ITS monitor, which is not necessarily the one the window is on. There is
+/// no single answer to re-read.
+///
+/// The two icons are deliberately never destroyed: they stay installed on the
+/// window for the life of the process, and `DestroyIcon` on the handle the
+/// window is still using is a use-after-free. They are two small bitmaps, and
+/// the process exiting is what frees them.
+///
+/// Every step is best-effort. The worst case is the icon Tauri already set,
+/// which is what shipped, so there is nothing to report and nothing to fail.
+#[cfg(windows)]
+fn use_native_size_icons(window: &tauri::WebviewWindow) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HINSTANCE, LPARAM, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        LoadImageW, SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, SM_CXICON,
+        SM_CXSMICON, SM_CYICON, SM_CYSMICON, WM_SETICON,
+    };
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let module = unsafe { GetModuleHandleW(None) };
+    let Ok(module) = module else { return };
+    let instance = HINSTANCE(module.0);
+
+    // Zero means the handle was not a window; 96 is the 100% baseline.
+    let dpi = match unsafe { GetDpiForWindow(hwnd) } {
+        0 => 96,
+        dpi => dpi,
+    };
+
+    // Small is the title bar and the window list. Big is Alt-Tab, Task View and
+    // the taskbar button.
+    for (slot, cx_metric, cy_metric) in [
+        (ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
+        (ICON_BIG, SM_CXICON, SM_CYICON),
+    ] {
+        let cx = unsafe { GetSystemMetricsForDpi(cx_metric, dpi) };
+        let cy = unsafe { GetSystemMetricsForDpi(cy_metric, dpi) };
+
+        // 32512 is IDI_APPLICATION, which is the id tauri-build links the .ico
+        // under -- the same convention as LoadIcon(hInstance, IDI_APPLICATION).
+        // It is an ordinal, not a pointer: MAKEINTRESOURCE is a cast.
+        let icon = unsafe {
+            LoadImageW(
+                Some(instance),
+                PCWSTR(32512 as *const u16),
+                IMAGE_ICON,
+                cx,
+                cy,
+                LR_DEFAULTCOLOR,
+            )
+        };
+
+        if let Ok(icon) = icon {
+            unsafe {
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(slot as usize)),
+                    Some(LPARAM(icon.0 as isize)),
+                );
+            }
+        }
+    }
 }
