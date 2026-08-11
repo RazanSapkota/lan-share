@@ -32,7 +32,7 @@ use crate::{
     },
     // Network: reading another device's shares.
     tasks::{
-        peer_browse, peer_media_url, peer_thumb, start_peer_download_task,
+        peek_peer_download, peer_browse, peer_media_url, peer_thumb, start_peer_download_task,
         detect_player, open_in_player, play_peer_file,
     },
     tasks::{
@@ -138,6 +138,7 @@ fn main() {
             peer_thumb,
             peer_media_url,
             start_peer_download_task,
+            peek_peer_download,
             // external players
             open_in_player,
             detect_player,

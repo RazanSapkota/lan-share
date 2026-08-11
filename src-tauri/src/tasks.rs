@@ -1805,6 +1805,76 @@ pub(crate) struct DownloadItem {
     pub(crate) size: u64,
 }
 
+/// The name a download claims inside the destination root, before any
+/// de-duplication.
+///
+/// One function, so `peek_peer_download` and `run_peer_download` cannot
+/// disagree about what is about to be written: a prompt that names the wrong
+/// file is worse than no prompt, because the user believes it.
+///
+/// A lone file lands in the root and a lone folder becomes a folder there, so
+/// both claim the same name -- only the location differs, and that is the
+/// caller's business.
+pub(crate) fn intended_name(items: &[DownloadItem], zip: bool) -> Option<String> {
+    let first = items.first()?;
+    Some(match (zip, items.len() == 1) {
+        (true, true) => format!("{}.zip", first.name),
+        (true, false) => "LAN Share selection.zip".to_string(),
+        (false, true) => first.name.clone(),
+        (false, false) => BUCKET_NAME.to_string(),
+    })
+}
+
+/// The folder a multi-item pick lands in when it is not zipped.
+///
+/// Named, because the "do I already have this?" check has to recognise it: the
+/// user picking four files twice means to fill this bucket again, so prompting
+/// about it every time would be noise rather than news.
+const BUCKET_NAME: &str = "LAN Share";
+
+/// The exact path the top-level name claims, before de-duplication.
+///
+/// The name came off another machine's listing, so it is input, and it gets the
+/// same containment check the per-file relative paths get below -- rejected
+/// rather than sanitized. Two separate traps live here:
+///
+///   - `..` and drive letters, which `safe_join` refuses outright;
+///   - and the subtler one, that a top-level name is a single leaf by
+///     construction, so anything landing deeper is already wrong. `Path::join`
+///     treats both `C:\x` and a rooted `/x` as replacing the whole path, which
+///     is how a name that *looks* contained ends up writing to `C:\x`. Checking
+///     the joined result rather than trusting the string is what closes it.
+fn top_level_target(
+    dest_root: &std::path::Path,
+    items: &[DownloadItem],
+    zip: bool,
+) -> Result<PathBuf, String> {
+    let name = intended_name(items, zip).ok_or_else(|| "nothing to download".to_string())?;
+    let claimed = safe_join(dest_root, &name)?;
+    if claimed.parent() != Some(dest_root) {
+        return Err(format!("refusing a suspicious name: {name}"));
+    }
+    Ok(claimed)
+}
+
+/// `top_level_target`, then a free name beside it. Never overwrites.
+pub(crate) fn claim_top_level(
+    dest_root: &std::path::Path,
+    items: &[DownloadItem],
+    zip: bool,
+) -> Result<PathBuf, String> {
+    let claimed = top_level_target(dest_root, items, zip)?;
+    // The leaf `safe_join` produced, not the raw name: they are the same string
+    // for every ordinary name, and where they differ the raw one is the one
+    // that escapes.
+    let leaf = claimed
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| "could not pick a name".to_string())?;
+    utils::unique_destination(dest_root, &leaf)
+        .ok_or_else(|| format!("could not pick a name for {leaf}"))
+}
+
 /// A file to fetch, with where it goes relative to the destination.
 struct Planned {
     /// Path on the other device, inside the share.
@@ -1812,6 +1882,67 @@ struct Planned {
     /// Path under the destination folder, or inside the archive.
     relative: String,
     size: u64,
+}
+
+/// What a download would land on, without starting it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct DownloadTarget {
+    /// Absolute path the download would create: a file, an archive, or the
+    /// containing folder a multi-item pick lands in.
+    pub(crate) path: String,
+    pub(crate) exists: bool,
+    /// Whether `exists` is worth interrupting the user about. False for the
+    /// shared "LAN Share" bucket: filling it again is the whole point of
+    /// picking four more files, so a prompt there is noise, not news.
+    pub(crate) prompt: bool,
+    /// The downloads folder itself, for the Settings field and the panel footer.
+    pub(crate) dest_root: String,
+}
+
+/// Answer "have I already got this?" before a download starts.
+///
+/// The renderer cannot work this out for itself: the naming rules live here,
+/// the destination root is deliberately never sent to the webview, and joining
+/// a Windows path in JavaScript is a bug waiting to be written.
+///
+/// Called with no items to ask only "where do downloads go?" -- the Settings
+/// field and the panel footer both need the resolved folder, and resolving it
+/// the same way a real download does is the point.
+///
+/// Advisory only. The writer-side rule is still `unique_destination`, which
+/// never overwrites -- so a file appearing between this answer and the write
+/// costs a `(2)` suffix, not a lost file.
+#[tauri::command]
+pub(crate) fn peek_peer_download(
+    app: tauri::AppHandle,
+    items: Vec<DownloadItem>,
+    zip: bool,
+) -> Result<DownloadTarget, String> {
+    let configured = config::load_config_impl(&app).download_dir;
+    let dest_root =
+        crate::peers::downloads_dir(&app, configured.as_deref()).map_err(|e| e.to_string())?;
+    let dest_text = shares::display_path(&dest_root);
+
+    let Some(name) = intended_name(&items, zip) else {
+        return Ok(DownloadTarget {
+            path: String::new(),
+            exists: false,
+            prompt: false,
+            dest_root: dest_text,
+        });
+    };
+    // The same helper the download itself goes through, so the prompt cannot
+    // name a path the writer was never going to touch.
+    let target = top_level_target(&dest_root, &items, zip)?;
+
+    Ok(DownloadTarget {
+        path: shares::display_path(&target),
+        exists: target.exists(),
+        // The shared bucket is not news: filling it again is exactly what
+        // picking four more files means.
+        prompt: name != BUCKET_NAME,
+        dest_root: dest_text,
+    })
 }
 
 /// Pull files from a paired device.
@@ -1834,7 +1965,12 @@ pub(crate) fn start_peer_download_task(
         return Err("nothing selected".to_string());
     }
     let (token, address) = peer_endpoint(&state, &device_id)?;
-    let dest_root = crate::peers::downloads_dir(&app).map_err(|e| e.to_string())?;
+    // Read from the saved config, never taken as an argument: a compromised
+    // webview must not be able to hand an arbitrary root to a download. It can
+    // only ask the *user* to pick one, through a native dialog.
+    let configured = config::load_config_impl(&app).download_dir;
+    let dest_root =
+        crate::peers::downloads_dir(&app, configured.as_deref()).map_err(|e| e.to_string())?;
 
     let task_id = alloc_task(&state, "download_starting", "Preparing")?;
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1872,8 +2008,7 @@ async fn run_peer_download(
             utils::url_encode_segment(share_id),
             encode_remote_path(&items[0].path)
         );
-        let target = utils::unique_destination(dest_root, &format!("{}.zip", items[0].name))
-            .ok_or_else(|| "could not pick a name for the archive".to_string())?;
+        let target = claim_top_level(dest_root, &items, zip)?;
         let bytes =
             stream_to_path(address, &route, token, &target, tasks, task_id, cancel, 0, None).await?;
         return Ok(DownloadResult {
@@ -1910,13 +2045,7 @@ async fn run_peer_download(
     let file_count = planned.len() as u64;
 
     if zip {
-        let name = if items.len() == 1 {
-            format!("{}.zip", items[0].name)
-        } else {
-            "LAN Share selection.zip".to_string()
-        };
-        let target = utils::unique_destination(dest_root, &name)
-            .ok_or_else(|| "could not pick a name for the archive".to_string())?;
+        let target = claim_top_level(dest_root, &items, zip)?;
         let bytes = zip_from_peer(
             address, token, share_id, &planned, &target, tasks, task_id, cancel, total_expected,
         )
@@ -1935,13 +2064,7 @@ async fn run_peer_download(
     let folder = if planned.len() == 1 && items.len() == 1 && !items[0].is_dir {
         dest_root.to_path_buf()
     } else {
-        let label = if items.len() == 1 {
-            items[0].name.clone()
-        } else {
-            "LAN Share".to_string()
-        };
-        let dir = utils::unique_destination(dest_root, &label)
-            .ok_or_else(|| "could not pick a folder name".to_string())?;
+        let dir = claim_top_level(dest_root, &items, zip)?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         dir
     };
@@ -2231,7 +2354,7 @@ fn encode_remote_path(path: &str) -> String {
 /// The names come from another machine's listing, so they are input: `..`, an
 /// absolute path or a drive letter must not be able to steer a write out of the
 /// downloads folder.
-fn safe_join(root: &std::path::Path, relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn safe_join(root: &std::path::Path, relative: &str) -> Result<PathBuf, String> {
     let mut out = root.to_path_buf();
     for segment in relative.split('/') {
         let segment = segment.trim();

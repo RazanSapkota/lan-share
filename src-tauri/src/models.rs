@@ -908,8 +908,14 @@ pub(crate) struct AppConfig {
     pub(crate) preferred_interface: Option<String>,
 
     // --- desktop UI state ---
+    /// Where files pulled from another device are written. `None` = the built-in
+    /// `<OS downloads>/LAN Share`.
+    ///
+    /// Stored in display form, like `Share.path`, and canonicalized at use --
+    /// because it is the containment root every downloaded name is checked
+    /// against, it cannot be trusted in the form it was typed or picked in.
     #[serde(default)]
-    pub(crate) last_picked_dir: Option<String>,
+    pub(crate) download_dir: Option<String>,
     #[serde(default = "default_true")]
     pub(crate) minimize_to_tray: bool,
 }
@@ -1014,7 +1020,7 @@ impl Default for AppConfig {
             peers: Vec::new(),
             mdns_enabled: false,
             preferred_interface: None,
-            last_picked_dir: None,
+            download_dir: None,
             minimize_to_tray: true,
         }
     }

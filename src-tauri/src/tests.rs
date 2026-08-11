@@ -1029,6 +1029,208 @@ fn unique_destination_never_overwrites() {
     let _ = fs::remove_dir_all(&base);
 }
 
+// ===========================================================================
+// Peer downloads: what gets claimed, and where
+// ===========================================================================
+
+fn dl_item(name: &str, is_dir: bool) -> crate::tasks::DownloadItem {
+    crate::tasks::DownloadItem {
+        path: name.to_string(),
+        name: name.to_string(),
+        is_dir,
+        size: 0,
+    }
+}
+
+/// The guard against the peek and the writer drifting apart. `intended_name` is
+/// what both of them call, so if this table stops matching `run_peer_download`,
+/// the "you already have this" prompt starts naming a file the download was
+/// never going to write -- worse than no prompt, because the user believes it.
+#[test]
+fn intended_name_matches_what_the_download_writes() {
+    use crate::tasks::intended_name;
+
+    let file = vec![dl_item("photo.jpg", false)];
+    let folder = vec![dl_item("Holiday", true)];
+    let many = vec![dl_item("a.txt", false), dl_item("b.txt", false)];
+
+    // Zipped: one item is named after itself, a selection gets the shared name.
+    assert_eq!(intended_name(&file, true).unwrap(), "photo.jpg.zip");
+    assert_eq!(intended_name(&folder, true).unwrap(), "Holiday.zip");
+    assert_eq!(intended_name(&many, true).unwrap(), "LAN Share selection.zip");
+
+    // Loose: a lone file lands in the root and a lone folder becomes a folder
+    // there, so both claim the same name -- only the location differs.
+    assert_eq!(intended_name(&file, false).unwrap(), "photo.jpg");
+    assert_eq!(intended_name(&folder, false).unwrap(), "Holiday");
+    assert_eq!(intended_name(&many, false).unwrap(), "LAN Share");
+
+    // Nothing ticked is not a name.
+    assert!(intended_name(&[], false).is_none());
+}
+
+/// The top-level name comes off another machine's listing, so it is input. It
+/// used to go straight into `unique_destination`, which meant a peer serving an
+/// entry called `../x` -- or, worse on Windows, `C:\x`, because `Path::join`
+/// with an absolute path replaces the whole path -- could steer the write
+/// clean out of the downloads folder.
+#[test]
+fn intended_name_is_refused_when_the_peer_name_escapes() {
+    let base = tempdir_unique("dl_escape");
+    let root = shares::canonical_root(&base.to_string_lossy()).unwrap();
+
+    for hostile in ["..", "../evil", "..\\evil", "C:\\evil", "a:b", "/etc/passwd"] {
+        let items = vec![dl_item(hostile, false)];
+        // Refused, or contained -- the invariant is that nothing lands outside
+        // the root, not that every hostile name produces an error. A bare `..`
+        // zipped becomes the literal file `...zip`, which is ugly and perfectly
+        // safe; `../evil` zipped still has a `..` segment and is refused.
+        for zip in [false, true] {
+            match crate::tasks::claim_top_level(&root, &items, zip) {
+                Err(_) => {}
+                Ok(path) => assert!(
+                    path.starts_with(&root),
+                    "{hostile} (zip={zip}) escaped to {}",
+                    path.display()
+                ),
+            }
+        }
+    }
+
+    // The forms that carry a traversal segment, a drive letter, or a rooted
+    // path are refused outright, both ways. `/etc/passwd` belongs here because
+    // it looks harmless -- `safe_join` splits it into contained segments -- but
+    // `Path::join` treats it as rooted and lands on `C:\etc\passwd`.
+    for hostile in ["../evil", "..\\evil", "C:\\evil", "a:b", "/etc/passwd", "sub/child"] {
+        let items = vec![dl_item(hostile, false)];
+        assert!(
+            crate::tasks::claim_top_level(&root, &items, false).is_err(),
+            "{hostile} was not refused"
+        );
+        assert!(
+            crate::tasks::claim_top_level(&root, &items, true).is_err(),
+            "{hostile} was not refused when zipped"
+        );
+    }
+
+    // An ordinary name still works, and lands inside the root.
+    let ok = crate::tasks::claim_top_level(&root, &vec![dl_item("photo.jpg", false)], false).unwrap();
+    assert!(ok.starts_with(&root));
+    assert_eq!(ok.file_name().unwrap(), "photo.jpg");
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+// ===========================================================================
+// Download destination
+// ===========================================================================
+
+#[test]
+fn resolve_downloads_dir_prefers_the_configured_folder() {
+    let base = tempdir_unique("dl_dest");
+    let picked = base.join("Received");
+    let fallback = base.join("Fallback");
+    fs::create_dir_all(&picked).unwrap();
+    fs::create_dir_all(&fallback).unwrap();
+
+    let root = crate::peers::resolve_downloads_dir(Some(&picked.to_string_lossy()), &fallback).unwrap();
+
+    // Used exactly as picked: no "LAN Share" subfolder bolted onto a folder the
+    // user just chose.
+    assert_eq!(root, shares::canonical_root(&picked.to_string_lossy()).unwrap());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn resolve_downloads_dir_falls_back_when_unset_or_blank() {
+    let base = tempdir_unique("dl_blank");
+    let fallback = base.join("Fallback");
+    fs::create_dir_all(&fallback).unwrap();
+    let expected = shares::canonical_root(&fallback.to_string_lossy()).unwrap();
+
+    for configured in [None, Some(""), Some("   ")] {
+        let root = crate::peers::resolve_downloads_dir(configured, &fallback).unwrap();
+        assert_eq!(root, expected, "{configured:?} did not fall back");
+    }
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// The invariant that matters: a folder the user picked becomes the containment
+/// root every downloaded name is checked against, so it has to get exactly the
+/// treatment a share root gets -- `..` resolved, symlinks followed, and the
+/// verbatim form on Windows so both sides of a `starts_with` carry the prefix.
+#[test]
+fn resolve_downloads_dir_canonicalizes_the_picked_folder() {
+    let base = tempdir_unique("dl_canon");
+    let real = base.join("Received");
+    fs::create_dir_all(&real).unwrap();
+
+    let roundabout = base.join("Received").join("..").join("Received");
+    let root =
+        crate::peers::resolve_downloads_dir(Some(&roundabout.to_string_lossy()), &base).unwrap();
+
+    assert_eq!(root, shares::canonical_root(&real.to_string_lossy()).unwrap());
+    // And a name checked against it cannot climb back out.
+    assert!(crate::tasks::safe_join(&root, "../escape").is_err());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// Create before canonicalizing -- `canonical_root` is `fs::canonicalize`,
+/// which fails on a path that is not there yet. The order is load-bearing.
+#[test]
+fn resolve_downloads_dir_creates_a_folder_that_is_not_there_yet() {
+    let base = tempdir_unique("dl_create");
+    let missing = base.join("not").join("yet");
+    assert!(!missing.exists());
+
+    let root = crate::peers::resolve_downloads_dir(Some(&missing.to_string_lossy()), &base).unwrap();
+    assert!(root.exists());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// A folder on a drive that is not plugged in right now must survive: it comes
+/// back when the drive does. Silently reverting to the default would write the
+/// user's files somewhere they never chose, and they would only find out by
+/// going looking.
+#[test]
+fn download_dir_survives_a_config_round_trip() {
+    let mut config = AppConfig::default();
+    config.download_dir = Some("  Z:\\NoSuchDrive\\Received  ".to_string());
+    config::normalize(&mut config);
+    assert_eq!(config.download_dir.as_deref(), Some("Z:\\NoSuchDrive\\Received"));
+
+    // Only an empty setting means "use the default".
+    for blank in ["", "   "] {
+        let mut config = AppConfig::default();
+        config.download_dir = Some(blank.to_string());
+        config::normalize(&mut config);
+        assert_eq!(config.download_dir, None, "{blank:?} did not blank");
+    }
+}
+
+/// Old config files carry `last_picked_dir`, which this field replaced. Nothing
+/// ever read it, and there is no `deny_unknown_fields` anywhere, so the key is
+/// simply ignored and dropped on the next save. No migration.
+#[test]
+fn config_without_download_dir_loads_with_none() {
+    // Built from a real config so the test does not have to track every
+    // required field, then aged back into the shape a 0.3.x install wrote.
+    let mut json = serde_json::to_value(AppConfig::default()).unwrap();
+    let obj = json.as_object_mut().unwrap();
+    obj.remove("download_dir");
+    obj.insert(
+        "last_picked_dir".to_string(),
+        serde_json::Value::String("C:\\Old\\Path".to_string()),
+    );
+
+    let config: AppConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(config.download_dir, None);
+}
+
 #[test]
 fn split_name_keeps_dotfiles_whole() {
     assert_eq!(utils::split_name("photo.jpg"), ("photo".into(), ".jpg".into()));

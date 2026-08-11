@@ -5,7 +5,11 @@
 //! respond*; these own a state machine, and filing them alongside would cost
 //! the property that makes `routes.rs` readable.
 
-use std::{net::IpAddr, path::PathBuf, time::Duration};
+use std::{
+    net::IpAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context, Result};
 use axum::{
@@ -147,22 +151,43 @@ pub(crate) fn peer_by_bearer_any(ctx: &ServerCtx, headers: &HeaderMap) -> Option
 
 /// The folder a file pulled from another device is written to.
 ///
-/// Not configurable, and no longer a "receive folder": nothing arrives here
-/// unasked, so there is nothing to choose a destination for in advance. It is
-/// canonicalized because it is the containment root every downloaded name is
-/// checked against -- the same treatment a share root gets.
-pub(crate) fn downloads_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+/// A folder the user picked is used exactly as given, with no `LAN Share`
+/// subfolder bolted on: they have just said where they want things, and a
+/// picker that invents folders nobody asked for is a picker people stop
+/// trusting. The built-in default still gets the subfolder, because dropping
+/// downloads loose into the OS download folder is a different rudeness.
+///
+/// The order here is load-bearing and unchanged from when this was hardcoded:
+/// create first, then canonicalize. `canonical_root` is `fs::canonicalize`,
+/// which fails on a path that is not there yet. The canonical form matters
+/// because this is the containment root every downloaded name is checked
+/// against -- so a picked folder gets the same treatment a share root gets,
+/// symlinks, junctions and 8.3 names resolved, and nothing less.
+pub(crate) fn resolve_downloads_dir(configured: Option<&str>, fallback: &Path) -> Result<PathBuf> {
+    let dir = match configured.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(picked) => PathBuf::from(picked),
+        None => fallback.to_path_buf(),
+    };
+
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create the downloads folder {}", dir.display()))?;
+    shares::canonical_root(&dir.to_string_lossy())
+}
+
+/// `resolve_downloads_dir`, with the OS download folder as the fallback.
+///
+/// Split from the part that does the work so the containment rules above can be
+/// tested: there is no `AppHandle` in the test module.
+pub(crate) fn downloads_dir(app: &tauri::AppHandle, configured: Option<&str>) -> Result<PathBuf> {
     use tauri::Manager;
 
-    let dir = app
+    let fallback = app
         .path()
         .download_dir()
         .unwrap_or_else(|_| std::env::temp_dir())
         .join("LAN Share");
 
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create the downloads folder {}", dir.display()))?;
-    shares::canonical_root(&dir.to_string_lossy())
+    resolve_downloads_dir(configured, &fallback)
 }
 
 // ---------------------------------------------------------------------------

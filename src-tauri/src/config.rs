@@ -104,6 +104,19 @@ pub(crate) fn normalize(config: &mut AppConfig) {
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty() && std::path::Path::new(p).is_file());
 
+    // Trimmed and blanked, but deliberately NOT dropped when the folder is
+    // missing -- unlike the player above, where falling back to the OS default
+    // is what an empty setting already means. A download folder on a drive that
+    // is not plugged in right now comes back when the drive does; silently
+    // reverting would write the user's files somewhere they did not choose, and
+    // they would only find out by going looking. It fails loudly at download
+    // time instead, naming the folder.
+    config.download_dir = config
+        .download_dir
+        .take()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+
     normalize_inner(config);
 }
 

@@ -22,6 +22,8 @@
     17  Event wiring + boot
     18  Network — discovery and pairing
     19  Devices — browsing another device's shares
+         (downloads live here too: they are started from this page, but the
+          list and its panel belong to the header and outlive it)
     20  Tooltips
    ========================================================= */
 
@@ -99,6 +101,13 @@ const state = {
   pinRevealed: false,
   qrCache: {},
   pendingConfirm: null,
+
+  // Downloads in flight and recently finished. Top-level, not under `network`,
+  // because they outlive the page that starts them: the header panel shows them
+  // from anywhere, and `pollNetDownload` runs regardless of where you navigate.
+  // In-memory only, like the activity log -- a history that survives a restart
+  // would start lying the moment you moved one of the files.
+  downloads: [],
 };
 
 // ============================================================
@@ -194,12 +203,19 @@ function showToast(message, kind) {
   }, 3600);
 }
 
-/** Promise-based confirm. Resolves true on OK, false on Cancel or backdrop. */
-function confirmDialog(title, body, okLabel) {
+/** Promise-based confirm. Resolves true on OK, false on Cancel or backdrop.
+ *
+ *  Passing `altLabel` adds a third button, which resolves the string "alt".
+ *  A distinct type on purpose: the `if (!ok) return` in every two-button caller
+ *  keeps meaning exactly what it meant, and a caller that asked for three
+ *  choices has to handle three. */
+function confirmDialog(title, body, okLabel, altLabel) {
   return new Promise((resolve) => {
     $("confirm-title").textContent = title;
     $("confirm-body").textContent = body || "";
     $("confirm-ok").textContent = okLabel || "Confirm";
+    $("confirm-alt").textContent = altLabel || "";
+    $("confirm-alt").classList.toggle("hidden", !altLabel);
     $("confirm-backdrop").classList.remove("hidden");
     state.pendingConfirm = resolve;
   });
@@ -304,7 +320,43 @@ function applyConfigToUi() {
   $("set-view").value = c.default_view_mode;
   $("set-player").value = c.external_player || "";
 
+  applyDownloadDirToSettings();
   renderInboxOptions();
+}
+
+/// The Settings field shows the RESOLVED folder, never the raw setting: when
+/// nothing is configured the raw value is empty, and an empty box beside a
+/// "Default" button tells the user nothing about where their files go.
+async function applyDownloadDirToSettings() {
+  const configured = (state.config && state.config.download_dir) || "";
+  const input = $("set-download-dir");
+  input.dataset.path = configured;
+  input.value = await refreshDownloadDest();
+
+  // A folder on a drive that is not plugged in is kept, not silently dropped,
+  // so it has to be said out loud here rather than discovered when a download
+  // fails.
+  const problem = $("set-download-dir-problem");
+  const missing = configured && !(await callQuiet("path_exists", { path: configured }));
+  problem.textContent = missing
+    ? "That folder is not there right now. Downloads will fail until it is back, or you choose another."
+    : "";
+  problem.classList.toggle("hidden", !missing);
+}
+
+/// Save a new destination and refresh everything that shows it. Writes through
+/// `save_config` directly rather than the debounced `saveConfig`, because the
+/// caller needs the new folder resolved on the very next line.
+async function saveDownloadDir(value) {
+  const next = Object.assign(readConfigFromUi(), { download_dir: value || null });
+  try {
+    await call("save_config", { config: next });
+  } catch (_err) {
+    return false; // call() already reported it
+  }
+  state.config = next;
+  await applyDownloadDirToSettings();
+  return true;
 }
 
 /** Build a fresh config object from the form. Never mutates `state.config`, so
@@ -1362,6 +1414,7 @@ function wire() {
   // --- dialogs ---
   $("confirm-ok").addEventListener("click", () => closeConfirm(true));
   $("confirm-cancel").addEventListener("click", () => closeConfirm(false));
+  $("confirm-alt").addEventListener("click", () => closeConfirm("alt"));
   $("confirm-backdrop").addEventListener("click", (event) => {
     if (event.target === $("confirm-backdrop")) closeConfirm(false);
   });
@@ -1374,10 +1427,12 @@ function wire() {
 
   wireDevices();
   wireNetwork();
+  wireDownloads();
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     if (!$("confirm-backdrop").classList.contains("hidden")) closeConfirm(false);
+    closeDownloadsPanel();
     if (!$("share-edit-backdrop").classList.contains("hidden")) {
       $("share-edit-backdrop").classList.add("hidden");
       state.shares.editing = null;
@@ -1399,6 +1454,10 @@ async function boot() {
   await loadShares();
   await refreshServerStatus();
   await loadFirewallHint();
+
+  // Paints the empty state and clears the badge, so the panel is never a blank
+  // box on its first open.
+  renderDownloads();
 
   switchPage("dashboard");
   startServerPoll();
@@ -2133,7 +2192,6 @@ state.network = {
   // Set when the selected device is known to be asleep. Distinct from `error`:
   // nothing was attempted, so there is nothing to report going wrong.
   offline: false,
-  downloads: [],
   viewerIndex: -1,
   tickTimer: null,
 };
@@ -2444,7 +2502,7 @@ function netRowHtml(entry) {
   const download = entry.isDir
     ? ""
     : `<button class="icon-button" type="button" data-net="download-one" data-name="${escapeHtml(entry.name)}"
-               aria-label="Download ${escapeHtml(entry.name)}" data-tip="Save this to your Downloads folder.">
+               aria-label="Download ${escapeHtml(entry.name)}" data-tip="Save this to your downloads folder.">
          <span class="material-symbols-outlined">download</span>
        </button>`;
 
@@ -2505,6 +2563,21 @@ function renderNetSelection() {
   $("net-selected-text").textContent = formatCount(count, "item") + " selected";
   const selectable = netVisibleEntries().filter((e) => !e.isShare);
   $("net-select-all").checked = count > 0 && count === selectable.length;
+
+  // Grey out a download that is already running. Only these two buttons: the
+  // per-row ones live inside `netRowHtml`, so keeping them in step would mean
+  // re-running `renderNetwork` -- a full innerHTML swap that takes the open
+  // tooltip and every hydrated thumbnail with it. The guard in
+  // `startNetDownload` covers those, with a toast saying why.
+  const items = net.entries
+    .filter((e) => net.selected.has(e.name))
+    .map((e) => ({ path: netEntryPath(e) }));
+  $("net-download").disabled = !!activeDownload(
+    downloadKey(net.deviceId, net.shareId, items, false)
+  );
+  $("net-download-zip").disabled = !!activeDownload(
+    downloadKey(net.deviceId, net.shareId, items, true)
+  );
 }
 
 function toggleNetSelection(name) {
@@ -2559,6 +2632,32 @@ function netEntryPath(entry) {
   return state.network.path ? state.network.path + "/" + entry.name : entry.name;
 }
 
+/// Identity for "am I already fetching this?".
+///
+/// Device, share, the exact set of paths, and the zip choice -- because the
+/// same folder as an archive and as loose files are two different downloads
+/// landing in two different places. Sorted, so ticking A then B and B then A
+/// are one download rather than two.
+function downloadKey(deviceId, shareId, items, zip) {
+  const paths = items
+    .map((i) => i.path)
+    .sort()
+    .join(" ");
+  return [deviceId, shareId, zip ? "zip" : "raw", paths].join("");
+}
+
+function activeDownload(key) {
+  return state.downloads.find((d) => !d.done && d.key === key) || null;
+}
+
+/// Downloads that have been asked for but have no row yet.
+///
+/// `state.downloads` cannot be the lock on its own: two awaits stand between
+/// the guard and the row -- the disk peek and, sometimes, a dialog the user
+/// leaves open -- and a double-click would sail straight through both. This is
+/// claimed synchronously, so the second click has something to find.
+const downloadStarting = new Set();
+
 async function startNetDownload(entries, zip) {
   const net = state.network;
   if (!entries.length || !net.shareId) return;
@@ -2569,47 +2668,90 @@ async function startNetDownload(entries, zip) {
     is_dir: !!e.isDir,
     size: e.size || 0,
   }));
+  const key = downloadKey(net.deviceId, net.shareId, items, zip);
 
-  let handle;
-  try {
-    handle = await call("start_peer_download_task", {
-      deviceId: net.deviceId,
-      shareId: net.shareId,
-      items,
-      zip,
-    });
-  } catch (_err) {
-    return; // call() already reported it
+  // Guard one: already asked for. Checked here rather than by disabling every
+  // trigger, because all five of them come through this function.
+  if (activeDownload(key) || downloadStarting.has(key)) {
+    showToast("That is already downloading", "info");
+    openDownloadsPanel();
+    return;
   }
+  downloadStarting.add(key);
 
-  const label =
-    entries.length === 1
-      ? entries[0].name + (zip ? " (zip)" : "")
-      : formatCount(entries.length, "item") + (zip ? " as .zip" : "");
+  try {
+    // Guard two: already on disk. Rust owns this answer -- it owns the naming
+    // rules and the destination root, and the root is deliberately never handed
+    // to this side.
+    const target = await callQuiet("peek_peer_download", { items, zip });
+    if (target && target.exists && target.prompt) {
+      const choice = await confirmDialog(
+        "You already have this",
+        target.path +
+          " is already there. Downloading again saves a second copy beside it, named “… (2)” — nothing is ever replaced.",
+        "Save another copy",
+        "Show me the one I have"
+      );
+      if (choice === false) return;
+      if (choice === "alt") {
+        callQuiet("show_in_explorer", { path: target.path });
+        return;
+      }
+    }
 
-  net.downloads.unshift({
-    id: handle.id,
-    label,
-    message: "Starting…",
-    progress: 0,
-    done: false,
-    error: null,
-  });
-  renderNetDownloads();
-  pollNetDownload(handle.id);
+    const label =
+      entries.length === 1
+        ? entries[0].name + (zip ? " (zip)" : "")
+        : formatCount(entries.length, "item") + (zip ? " as .zip" : "");
+
+    const row = {
+      id: null,
+      key,
+      label,
+      message: "Starting…",
+      progress: 0,
+      done: false,
+      cancelled: false,
+      error: null,
+      path: "",
+    };
+    state.downloads.unshift(row);
+    renderDownloads();
+
+    let handle;
+    try {
+      handle = await call("start_peer_download_task", {
+        deviceId: net.deviceId,
+        shareId: net.shareId,
+        items,
+        zip,
+      });
+    } catch (_err) {
+      state.downloads = state.downloads.filter((d) => d !== row);
+      renderDownloads();
+      return; // call() already reported it
+    }
+
+    row.id = handle.id;
+    pollNetDownload(handle.id);
+  } finally {
+    // Released only once the row exists to take over as the guard -- or once
+    // the attempt is over, whichever came first.
+    downloadStarting.delete(key);
+  }
 }
 
 async function pollNetDownload(taskId) {
   while (true) {
     await sleep(NET_DOWNLOAD_POLL_MS);
     const payload = await callQuiet("get_task_progress", { taskId });
-    const row = state.network.downloads.find((d) => d.id === taskId);
+    const row = state.downloads.find((d) => d.id === taskId);
     if (!row) return; // the user cleared it
 
     if (!payload) {
       row.done = true;
       row.error = "lost contact with the download";
-      renderNetDownloads();
+      renderDownloads();
       return;
     }
 
@@ -2619,46 +2761,169 @@ async function pollNetDownload(taskId) {
     if (payload.done) {
       row.done = true;
       row.error = payload.error || null;
-      if (payload.error) {
+      row.path = (payload.download_result && payload.download_result.path) || "";
+      // A download the user cancelled is not a failure to shout about: they
+      // already know, because they are the one who stopped it.
+      if (payload.error && !row.cancelled) {
         showToast(payload.error, "error");
-      } else {
-        const where = (payload.download_result && payload.download_result.path) || "";
-        showToast("Saved to " + where, "success");
+      } else if (!payload.error) {
+        showToast("Saved to " + row.path, "success");
       }
-      renderNetDownloads();
+      renderDownloads();
       await callQuiet("clear_task", { taskId });
       return;
     }
-    renderNetDownloads();
+    renderDownloads();
   }
 }
 
-function renderNetDownloads() {
-  const rows = state.network.downloads;
-  $("net-downloads-card").classList.toggle("hidden", rows.length === 0);
-  $("net-downloads").innerHTML = rows
-    .map((d) => {
-      const pct = Math.round((d.progress || 0) * 100);
-      const icon = d.error ? "error" : d.done ? "check_circle" : "download";
-      // No declared total on a streamed archive, so the bar goes indeterminate
-      // rather than sitting at zero and looking stuck.
-      const bar = d.done
-        ? ""
-        : `<span class="progress-track">
-             <span class="progress-bar${pct ? "" : " is-indeterminate"}" style="width:${pct}%"></span>
-           </span>`;
-      return `
-      <div class="net-download-row ${d.done ? "is-done" : ""}">
-        <span class="material-symbols-outlined">${icon}</span>
-        <span class="net-download-main">
-          <span class="net-download-name">${escapeHtml(d.label)}</span>
+function renderDownloads() {
+  const rows = state.downloads;
+  $("downloads-list").innerHTML = rows.length
+    ? rows.map(downloadRowHtml).join("")
+    : '<p class="downloads-empty">Nothing yet. Pick something on the Devices page and it will show up here.</p>';
+  updateDownloadsBadge();
+  if (state.currentPage === "network") renderNetSelection();
+}
+
+function downloadRowHtml(d) {
+  const pct = Math.round((d.progress || 0) * 100);
+  const cancelled = d.cancelled && d.error;
+  const icon = d.error ? (cancelled ? "cancel" : "error") : d.done ? "check_circle" : "download";
+  // No declared total on a streamed archive, so the bar goes indeterminate
+  // rather than sitting at zero and looking stuck.
+  const bar = d.done
+    ? ""
+    : `<span class="progress-track">
+         <span class="progress-bar${pct ? "" : " is-indeterminate"}" style="width:${pct}%"></span>
+       </span>`;
+
+  let actions = "";
+  if (!d.done && d.id != null) {
+    actions = iconAction("cancel-download", d.id, "close", "Stop this download.");
+  } else if (d.done) {
+    if (d.path && !d.error) {
+      actions += iconAction("reveal-download", d.id, "folder_open", "Show this in Explorer.");
+    }
+    actions += iconAction("dismiss-download", d.id, "close", "Remove this row.");
+  }
+
+  const tone = d.error ? (cancelled ? "" : " is-error") : d.done ? " is-ok" : "";
+  const meta = cancelled ? "Cancelled" : d.error || d.message || "";
+
+  return `
+      <div class="download-row${d.done ? " is-done" : ""}${tone}">
+        <span class="material-symbols-outlined download-icon">${icon}</span>
+        <span class="download-main">
+          <span class="download-name">${escapeHtml(d.label)}</span>
           ${bar}
-          <span class="net-download-meta">${escapeHtml(d.error || d.message || "")}</span>
+          <span class="download-meta">${escapeHtml(meta)}</span>
         </span>
-        <span></span>
+        <span class="download-actions">${actions}</span>
       </div>`;
-    })
-    .join("");
+}
+
+function iconAction(action, id, icon, tip) {
+  return `<button class="icon-button" type="button" data-dl="${action}" data-id="${id}"
+                  aria-label="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">
+            <span class="material-symbols-outlined">${icon}</span>
+          </button>`;
+}
+
+/// Active downloads only. A finished row is not something to nag about -- the
+/// toast already said where it went.
+function updateDownloadsBadge() {
+  const count = state.downloads.filter((d) => !d.done).length;
+  const badge = $("downloads-badge");
+  badge.textContent = count;
+  badge.classList.toggle("hidden", count === 0);
+}
+
+// --- the downloads panel ---------------------------------------------------
+
+function openDownloadsPanel() {
+  $("downloads-backdrop").classList.remove("hidden");
+  renderDownloads();
+  refreshDownloadDest();
+}
+
+function closeDownloadsPanel() {
+  $("downloads-backdrop").classList.add("hidden");
+}
+
+/// Ask Rust where downloads go. It resolves the configured folder the same way
+/// a download does, so the footer shows a real path even when nothing is set --
+/// which is the only way "Default" is legible.
+async function refreshDownloadDest() {
+  const target = await callQuiet("peek_peer_download", { items: [], zip: false });
+  const dest = (target && target.dest_root) || "";
+  const label = $("downloads-dest");
+  label.textContent = dest || "unavailable";
+  label.classList.toggle("is-problem", !dest);
+  label.dataset.path = dest;
+  return dest;
+}
+
+/// The picker, shared by Settings and the panel footer.
+async function pickDownloadDir() {
+  const picked = await callQuiet("pick_folder");
+  if (!picked) return false;
+  if (!(await saveDownloadDir(picked))) return false;
+  showToast("Downloads will be saved to " + picked, "success");
+  return true;
+}
+
+function wireDownloads() {
+  $("downloads-toggle").addEventListener("click", () => {
+    const hidden = $("downloads-backdrop").classList.contains("hidden");
+    if (hidden) openDownloadsPanel();
+    else closeDownloadsPanel();
+  });
+  $("downloads-close").addEventListener("click", closeDownloadsPanel);
+  $("downloads-backdrop").addEventListener("click", (event) => {
+    if (event.target === $("downloads-backdrop")) closeDownloadsPanel();
+  });
+
+  $("downloads-clear").addEventListener("click", () => {
+    state.downloads = state.downloads.filter((d) => !d.done);
+    renderDownloads();
+  });
+
+  $("downloads-open-dest").addEventListener("click", () => {
+    const path = $("downloads-dest").dataset.path;
+    if (path) callQuiet("show_in_explorer", { path });
+  });
+  $("downloads-change-dest").addEventListener("click", pickDownloadDir);
+
+  // --- the same folder, from Settings ---
+  $("set-download-dir-pick").addEventListener("click", pickDownloadDir);
+  $("set-download-dir-reset").addEventListener("click", async () => {
+    if (await saveDownloadDir(null)) showToast("Back to the default downloads folder", "success");
+  });
+  $("set-download-dir-open").addEventListener("click", () => {
+    const path = $("set-download-dir").value;
+    if (path) callQuiet("show_in_explorer", { path });
+  });
+
+  $("downloads-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-dl]");
+    if (!button) return;
+    const id = Number(button.dataset.id);
+    const row = state.downloads.find((d) => d.id === id);
+    if (!row) return;
+
+    if (button.dataset.dl === "cancel-download") {
+      row.cancelled = true;
+      row.message = "Stopping…";
+      callQuiet("cancel_task", { taskId: id });
+      renderDownloads();
+    } else if (button.dataset.dl === "reveal-download") {
+      callQuiet("show_in_explorer", { path: row.path });
+    } else if (button.dataset.dl === "dismiss-download") {
+      state.downloads = state.downloads.filter((d) => d !== row);
+      renderDownloads();
+    }
+  });
 }
 
 // --- preview ---------------------------------------------------------------
@@ -2808,11 +3073,6 @@ function wireNetwork() {
     state.network.entries.filter((e) => state.network.selected.has(e.name));
   $("net-download").addEventListener("click", () => startNetDownload(selectedEntries(), false));
   $("net-download-zip").addEventListener("click", () => startNetDownload(selectedEntries(), true));
-
-  $("net-downloads-clear").addEventListener("click", () => {
-    state.network.downloads = state.network.downloads.filter((d) => !d.done);
-    renderNetDownloads();
-  });
 
   // --- preview ---
   $("net-viewer-close").addEventListener("click", closeNetViewer);

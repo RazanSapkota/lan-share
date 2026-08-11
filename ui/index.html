@@ -37,6 +37,12 @@
                   data-tip="Whether the server is running. While it is stopped, nobody on the network can reach anything you share.">
               <span class="pill-dot"></span><span id="header-status-text">Stopped</span>
             </span>
+            <button id="downloads-toggle" class="icon-button has-badge" type="button"
+                    aria-label="Downloads" aria-haspopup="dialog"
+                    data-tip="Files being pulled from other devices, and where they landed.">
+              <span class="material-symbols-outlined">download</span>
+              <span class="sidebar-badge header-badge hidden" id="downloads-badge">0</span>
+            </button>
             <button id="theme-toggle" class="icon-button" type="button" aria-label="Change theme"
                     data-tip="Open Settings to change the colour theme of this window.">
               <span class="material-symbols-outlined">palette</span>
@@ -392,19 +398,6 @@
               <div id="net-body" class="net-body" aria-live="polite"></div>
             </article>
 
-            <!-- Downloads in flight. Lives on the page that starts them. -->
-            <article class="card hidden" id="net-downloads-card">
-              <div class="card-head">
-                <h3 data-tip="Files being pulled from another device. Rows clear themselves once they finish.">Downloads</h3>
-                <span class="spacer"></span>
-                <button id="net-downloads-clear" class="ghost-button" type="button"
-                        data-tip="Remove the finished rows.">
-                  <span class="material-symbols-outlined">clear_all</span>
-                  <span>Clear finished</span>
-                </button>
-              </div>
-              <div id="net-downloads" class="net-downloads"></div>
-            </article>
           </div>
         </section>
 
@@ -642,6 +635,43 @@
 
             <div class="settings-divider"></div>
 
+            <!-- Downloads. The mirror of Uploads above: that one is files
+                 arriving from a browser, this one is files you pull from a
+                 paired device. -->
+            <section class="settings-section">
+              <div class="settings-head">
+                <span class="settings-tag">Downloads</span>
+                <h2 class="settings-title-sm">Where files from other devices land</h2>
+                <p class="settings-desc">Nothing is ever replaced — a name already in use becomes "photo (2).jpg".</p>
+              </div>
+              <div class="settings-body">
+                <div class="path-grid">
+                  <div class="path-row">
+                    <label class="path-label" for="set-download-dir">Save downloads to</label>
+                    <!-- Read-only on purpose. A bad player path quietly falls
+                         back to the OS default; a bad download folder fails
+                         every download. The picker is the only writer, so there
+                         is no typed path to validate. -->
+                    <div class="input-with-button">
+                      <input id="set-download-dir" type="text" readonly
+                             data-tip="Chosen with the folder picker, so it is always somewhere that exists." />
+                      <button id="set-download-dir-pick" class="ghost-button" type="button">Choose…</button>
+                      <button id="set-download-dir-reset" class="ghost-button" type="button"
+                              data-tip="Go back to the LAN Share folder inside your own Downloads.">Default</button>
+                      <button id="set-download-dir-open" class="icon-button" type="button"
+                              aria-label="Open this folder"
+                              data-tip="Open this folder in Explorer.">
+                        <span class="material-symbols-outlined">folder_open</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p class="settings-desc hidden" id="set-download-dir-problem"></p>
+              </div>
+            </section>
+
+            <div class="settings-divider"></div>
+
             <!-- Media -->
             <section class="settings-section">
               <div class="settings-head">
@@ -832,7 +862,7 @@
           <span>Open in player</span>
         </button>
         <button id="net-viewer-download" class="ghost-button" type="button"
-                data-tip="Save this file to your Downloads folder.">
+                data-tip="Save this file to your downloads folder.">
           <span class="material-symbols-outlined">download</span>
           <span>Download</span>
         </button>
@@ -904,7 +934,46 @@
         <p id="confirm-body"></p>
         <div class="dialog-actions">
           <button id="confirm-cancel" class="ghost-button" type="button">Cancel</button>
+          <!-- A third choice, hidden unless a caller asks for one. Resolves the
+               string "alt" rather than a boolean, so the `if (!ok) return` in
+               every two-button caller keeps meaning what it always meant. -->
+          <button id="confirm-alt" class="ghost-button hidden" type="button"></button>
           <button id="confirm-ok" class="primary-button" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================== Downloads ============================= -->
+    <!-- A popover, not a modal. It borrows the dialog backdrop purely for
+         light-dismiss and Escape, and parks under the header button that opens
+         it -- which sits in a sticky, full-width header and therefore never
+         moves. That is what buys a popover with no positioning code. -->
+    <div class="dialog-backdrop panel-backdrop hidden" id="downloads-backdrop">
+      <div class="dialog-card downloads-card" role="dialog" aria-labelledby="downloads-title">
+        <div class="card-head downloads-head">
+          <h3 id="downloads-title">Downloads</h3>
+          <span class="spacer"></span>
+          <button id="downloads-clear" class="ghost-button" type="button"
+                  data-tip="Remove the finished rows. The files stay where they are.">
+            <span class="material-symbols-outlined">clear_all</span>
+            <span>Clear finished</span>
+          </button>
+          <button id="downloads-close" class="icon-button" type="button" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </div>
+        <div id="downloads-list" class="downloads-list"></div>
+        <div class="downloads-foot">
+          <span class="material-symbols-outlined">folder</span>
+          <span class="downloads-dest mono" id="downloads-dest">—</span>
+          <span class="spacer"></span>
+          <button id="downloads-open-dest" class="icon-button" type="button"
+                  aria-label="Open the downloads folder"
+                  data-tip="Open this folder in Explorer.">
+            <span class="material-symbols-outlined">folder_open</span>
+          </button>
+          <button id="downloads-change-dest" class="ghost-button" type="button"
+                  data-tip="Choose a different folder for everything you download from now on.">Change…</button>
         </div>
       </div>
     </div>
